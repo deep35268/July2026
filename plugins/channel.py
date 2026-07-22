@@ -158,7 +158,7 @@ async def generate_landscape_poster(
     bg.convert("RGB").save(out, format="JPEG", quality=92)
     return out.getvalue()
 
-# ============ DUPLICATE CHECK (optional but recommended) ============
+# ============ DUPLICATE CHECK (optional) ============
 async def is_movie_posted_in_channel(client, movie_name: str, channel_id: int, limit: int = 300) -> bool:
     try:
         async for message in client.get_chat_history(chat_id=channel_id, limit=limit):
@@ -495,7 +495,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         await db.movie_updates.update_one({"_id": base_name}, {"$push": {"files": file_data}})
         await send_movie_update(bot, base_name)
 
-# ============ SEND MOVIE UPDATE ============
+# ============ SEND MOVIE UPDATE (FIXED) ============
 async def send_movie_update(bot, base_name):
     max_retries = 3
     for attempt in range(max_retries):
@@ -522,6 +522,8 @@ async def send_movie_update(bot, base_name):
                     "tagline": "",
                     "year": movie_doc.get("year", "")
                 }
+
+            # Generate landscape poster bytes
             poster_bytes = await generate_landscape_poster(
                 title=movie_data.get("title", base_name),
                 backdrop_url=movie_data.get("backdrop_url"),
@@ -531,7 +533,19 @@ async def send_movie_update(bot, base_name):
                 year=movie_data.get("year")
             )
 
-            if poster_bytes:
+            # ---- VALIDATE POSTER BYTES ----
+            valid_poster = False
+            if poster_bytes and len(poster_bytes) > 100:   # at least some size
+                try:
+                    # Try to open with PIL to confirm it's a valid image
+                    Image.open(io.BytesIO(poster_bytes))
+                    valid_poster = True
+                except Exception as e:
+                    logger.warning(f"Generated poster is invalid for {base_name}: {e}")
+                    poster_bytes = None
+
+            if valid_poster:
+                # Send as photo
                 msg = await bot.send_photo(
                     chat_id=MOVIE_UPDATE_CHANNEL,
                     photo=poster_bytes,
@@ -541,6 +555,7 @@ async def send_movie_update(bot, base_name):
                 )
                 is_photo = True
             else:
+                # Fallback: send as message (without photo)
                 send_params = {
                     "chat_id": MOVIE_UPDATE_CHANNEL,
                     "text": text,
@@ -557,6 +572,7 @@ async def send_movie_update(bot, base_name):
                 {"$set": {"message_id": msg.id, "is_photo": is_photo}}
             )
             return msg
+
         except FloodWait as e:
             await asyncio.sleep(e.value + 2)
         except Exception as e:
