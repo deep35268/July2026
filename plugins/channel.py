@@ -495,7 +495,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         await db.movie_updates.update_one({"_id": base_name}, {"$push": {"files": file_data}})
         await send_movie_update(bot, base_name)
 
-# ============ SEND MOVIE UPDATE (FIXED) ============
+# ============ SEND MOVIE UPDATE (FIXED WITH SAFE PHOTO SEND) ============
 async def send_movie_update(bot, base_name):
     max_retries = 3
     for attempt in range(max_retries):
@@ -533,29 +533,27 @@ async def send_movie_update(bot, base_name):
                 year=movie_data.get("year")
             )
 
-            # ---- VALIDATE POSTER BYTES ----
-            valid_poster = False
-            if poster_bytes and len(poster_bytes) > 100:   # at least some size
+            # ---- TRY TO SEND AS PHOTO ----
+            sent_as_photo = False
+            if poster_bytes and len(poster_bytes) > 100:
                 try:
-                    # Try to open with PIL to confirm it's a valid image
+                    # Validate with PIL
                     Image.open(io.BytesIO(poster_bytes))
-                    valid_poster = True
+                    # Try to send
+                    msg = await bot.send_photo(
+                        chat_id=MOVIE_UPDATE_CHANNEL,
+                        photo=poster_bytes,
+                        caption=text,
+                        reply_markup=buttons,
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                    sent_as_photo = True
                 except Exception as e:
-                    logger.warning(f"Generated poster is invalid for {base_name}: {e}")
-                    poster_bytes = None
+                    logger.warning(f"Photo send failed for {base_name}: {e}. Falling back to text.")
+                    poster_bytes = None  # invalidate
 
-            if valid_poster:
-                # Send as photo
-                msg = await bot.send_photo(
-                    chat_id=MOVIE_UPDATE_CHANNEL,
-                    photo=poster_bytes,
-                    caption=text,
-                    reply_markup=buttons,
-                    parse_mode=enums.ParseMode.HTML
-                )
-                is_photo = True
-            else:
-                # Fallback: send as message (without photo)
+            # ---- FALLBACK: SEND AS TEXT ----
+            if not sent_as_photo:
                 send_params = {
                     "chat_id": MOVIE_UPDATE_CHANNEL,
                     "text": text,
@@ -566,6 +564,8 @@ async def send_movie_update(bot, base_name):
                     send_params["invert_media"] = ABOVE_PREVIEW
                 msg = await bot.send_message(**send_params)
                 is_photo = False
+            else:
+                is_photo = True
 
             await db.movie_updates.update_one(
                 {"_id": base_name},
