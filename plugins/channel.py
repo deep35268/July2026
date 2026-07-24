@@ -15,9 +15,6 @@ from bs4 import BeautifulSoup
 # Pillow (PIL) for image editing
 from PIL import Image, ImageDraw, ImageFont
 
-# Google Gemini AI Library
-import google.generativeai as genai
-
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from pyrogram.errors import MessageIdInvalid, MessageNotModified, FloodWait
@@ -38,13 +35,7 @@ from info import (
 logger = logging.getLogger(__name__)
 
 # ============ GEMINI AI CONFIGURATION ============
-# ਆਪਣੀ Gemini API Key ਇੱਥੇ ਪਾਓ
 GEMINI_API_KEY = "AIzaSyCUuLfxuwA19ILtBjuWTZFUlPe1y7tA0JA"
-if GEMINI_API_KEY and GEMINI_API_KEY != "AIzaSyCUuLfxuwA19ILtBjuWTZFUlPe1y7tA0JA":
-    genai.configure(api_key=GEMINI_API_KEY)
-    ai_model = genai.GenerativeModel('gemini-1.5-flash')
-else:
-    ai_model = None
 
 SESSION: Optional[aiohttp.ClientSession] = None
 
@@ -100,15 +91,6 @@ CAPTION_LANGUAGES = {
     "jpn": "Japanese", "japanese": "Japanese",
 }
 
-OTT_PLATFORMS = {
-    "nf": "Netflix", "netflix": "Netflix",
-    "sonyliv": "SonyLiv", "sony": "SonyLiv", "sliv": "SonyLiv",
-    "amzn": "Amazon Prime Video", "prime": "Amazon Prime Video", "primevideo": "Amazon Prime Video",
-    "hotstar": "Disney+ Hotstar", "zee5": "Zee5", "jio": "JioHotstar", "jhs": "JioHotstar",
-    "aha": "Aha", "hbo": "HBO Max", "paramount": "Paramount+", "apple": "Apple TV+", 
-    "hoichoi": "Hoichoi", "sunnxt": "Sun NXT", "viki": "Viki"
-}
-
 CLEAN_PATTERN = re.compile(r'@[^ \n\r\t\.,:;!?()\[\]{}<>\\/"\'=_%]+|\bwww\.[^\s\]\)]+|\([\@^]+\)|\[[\@^]+\]')
 NORMALIZE_PATTERN = re.compile(r"[._\-\+]+|[()\[\]{}:;'â€“!,.?]")
 QUALITY_PATTERN = re.compile(
@@ -122,35 +104,45 @@ EPISODE_CLEAN_PATTERN = re.compile(r'\b(S\d{1,2}|E\d{1,3}|Ep\d{1,3}|Episode\s*\d
 
 MEDIA_FILTER = filters.document | filters.video | filters.audio
 
-# ============ AI LANGUAGE DETECTION FUNCTION ============
+# ============ AI LANGUAGE DETECTION (DIRECT API CALL) ============
 
 async def detect_language_with_ai(movie_name: str) -> str:
     """
-    ਜੇਕਰ TMDB ਫੇਲ੍ਹ ਹੋਵੇ, ਤਾਂ AI ਦੁਆਰਾ ਸਹੀ ਭਾਸ਼ਾ ਪਛਾਣੋ
+    Direct REST API ਨਾਲ Gemini AI ਦੁਆਰਾ ਸਹੀ ਭਾਸ਼ਾ ਪਛਾਣਨ ਵਾਲਾ ਫੰਕਸ਼ਨ
     """
-    if not ai_model:
+    if not GEMINI_API_KEY:
         return "Hindi"
 
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    
     prompt = f"""
     You are an expert movie language analyzer.
     Task: Identify the exact primary original audio language of the movie/show titled: "{movie_name}".
 
     STRICT RULES:
     1. DO NOT DEFAULT TO ENGLISH.
-    2. Check the cast, director, region, and title (e.g., "Warning 2" is Punjabi, "Carry On Jatta" is Punjabi).
+    2. Check the cast, director, region, and title (e.g., "Warning 2" is Punjabi, "Carry On Jatta" is Punjabi, "Thukra Ke Mera Pyaar" is Hindi).
     3. Output strictly raw JSON format without markdown code blocks.
 
     JSON Structure:
     {{"language": "Punjabi"}}
     """
+    
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    
     try:
-        response = await asyncio.to_thread(ai_model.generate_content, prompt)
-        clean_json = response.text.replace("```json", "").replace("```", "").strip()
-        data = json.loads(clean_json)
-        return data.get("language", "Hindi").title()
+        session = await get_session()
+        async with session.post(url, json=payload, timeout=10) as resp:
+            if resp.status == 200:
+                result = await resp.json()
+                text_resp = result['candidates'][0]['content']['parts'][0]['text']
+                clean_json = text_resp.replace("```json", "").replace("```", "").strip()
+                data = json.loads(clean_json)
+                return data.get("language", "Hindi").title()
     except Exception as e:
         logger.error(f"AI Language Detection Error: {e}")
-        return "Hindi"
+    
+    return "Hindi"
 
 # ============ HD POSTER WITH TITLE OVERLAY ============
 
@@ -171,7 +163,7 @@ async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[by
         draw = ImageDraw.Draw(image)
         
         try:
-            font_size = int(img_w * 0.08)  # Text Size
+            font_size = int(img_w * 0.08)
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
         except:
             font = ImageFont.load_default()
@@ -185,7 +177,7 @@ async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[by
         x = (img_w - text_w) // 2
         y = (img_h - text_h) // 2
         
-        # Background Overlay for readability
+        # Background Overlay
         overlay = Image.new('RGBA', (img_w, img_h), (0, 0, 0, 0))
         overlay_draw = ImageDraw.Draw(overlay)
         padding = 30
@@ -196,7 +188,7 @@ async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[by
         image = Image.alpha_composite(image, overlay)
         draw = ImageDraw.Draw(image)
         
-        # Draw White Bold Text
+        # Draw Text
         draw.text((x, y), wrapped_title, font=font, fill=(255, 255, 255, 255))
         
         output = io.BytesIO()
@@ -406,7 +398,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
         is_series = (media_info["tag"] == "#SERIES")
 
         # ======================================================
-        # ✅ FIXED LANGUAGE CHECK: TMDB -> Gemini AI Detection
+        # ✅ LANGUAGE FIX: TMDB -> Gemini AI Detection
         # ======================================================
         if tmdb_language_override and tmdb_language_override != "N/A":
             final_language = tmdb_language_override
@@ -467,13 +459,27 @@ async def send_movie_update(bot, base_name, is_update=False):
         buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='🔥 JOIN CHANNEL 🔥', url="https://t.me/+l-EIo3NnnJAxODE9")]])
         poster_url = movie_doc.get("poster_url")
 
-        # Generate Poster with Movie Title
+        # Generate Poster with Movie Title Overlay
         image_bytes = await create_title_only_poster(poster_url, base_name)
 
         if image_bytes:
+            # ✅ FIX: Bytes ਨੂੰ io.BytesIO ਨਾਲ ਫਾਈਲ ਆਬਜੈਕਟ ਵਿੱਚ ਕਨਵਰਟ ਕੀਤਾ
+            photo_file = io.BytesIO(image_bytes)
+            photo_file.name = "poster.jpg"
+
             sent_msg = await bot.send_photo(
                 chat_id=MOVIE_UPDATE_CHANNEL,
-                photo=image_bytes,
+                photo=photo_file,
+                caption=text,
+                reply_markup=buttons,
+                parse_mode=enums.ParseMode.HTML
+            )
+            return sent_msg
+        else:
+            # Fallback to direct URL photo
+            sent_msg = await bot.send_photo(
+                chat_id=MOVIE_UPDATE_CHANNEL,
+                photo=poster_url,
                 caption=text,
                 reply_markup=buttons,
                 parse_mode=enums.ParseMode.HTML
