@@ -109,7 +109,7 @@ EPISODE_CLEAN_PATTERN = re.compile(r'\b(S\d{1,2}|E\d{1,3}|Ep\d{1,3}|Episode\s*\d
 
 MEDIA_FILTER = filters.document | filters.video | filters.audio
 
-# ============ NEW: CREATE TITLE-ONLY POSTER ============
+# ============ CREATE TITLE-ONLY POSTER (Clean Title Poster) ============
 
 async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[bytes]:
     """
@@ -117,41 +117,31 @@ async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[by
     ਜੇਕਰ backdrop ਨਾ ਮਿਲੇ, ਤਾਂ None ਵਾਪਸ ਕਰੋ।
     """
     try:
-        # 1. Backdrop ਡਾਊਨਲੋਡ
         async with aiohttp.ClientSession() as session:
             async with session.get(backdrop_url) as resp:
                 if resp.status != 200:
                     return None
                 img_data = await resp.read()
         
-        # 2. PIL Image ਖੋਲ੍ਹੋ
         image = Image.open(io.BytesIO(img_data)).convert("RGBA")
         img_w, img_h = image.size
-        
-        # 3. Draw object
         draw = ImageDraw.Draw(image)
         
-        # 4. ਫੌਂਟ ਲੋਡ ਕਰੋ (Bold, ਵੱਡਾ)
         try:
-            font_size = int(img_w * 0.10)  # 10% of width
+            font_size = int(img_w * 0.10)
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
         except:
             font = ImageFont.load_default()
             font_size = 20
         
-        # 5. ਟਾਈਟਲ ਨੂੰ wrap ਕਰੋ
         wrapped_title = textwrap.fill(title.upper(), width=14)
-        
-        # 6. ਟੈਕਸਟ ਦਾ size ਮਾਪੋ
         bbox = draw.textbbox((0, 0), wrapped_title, font=font)
         text_w = bbox[2] - bbox[0]
         text_h = bbox[3] - bbox[1]
         
-        # 7. Center coordinates
         x = (img_w - text_w) // 2
         y = (img_h - text_h) // 2 - int(text_h * 0.2)
         
-        # 8. Background overlay (semi-transparent black for readability)
         overlay = Image.new('RGBA', (img_w, img_h), (0, 0, 0, 0))
         overlay_draw = ImageDraw.Draw(overlay)
         padding = 25
@@ -161,11 +151,8 @@ async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[by
         )
         image = Image.alpha_composite(image, overlay)
         draw = ImageDraw.Draw(image)
-        
-        # 9. White text
         draw.text((x, y), wrapped_title, font=font, fill=(255, 255, 255, 255))
         
-        # 10. Bytes output
         output = io.BytesIO()
         image.convert("RGB").save(output, format="JPEG", quality=92)
         return output.getvalue()
@@ -181,7 +168,6 @@ async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optio
         session = await get_session()
         m_type = "series" if is_series else "movie"
         encoded_query = urllib.parse.quote(query)
-        
         search_url = f"https://v3-cinemeta.strem.io/catalog/{m_type}/top/search={encoded_query}.json"
         async with session.get(search_url, timeout=10) as resp:
             if resp.status == 200:
@@ -200,8 +186,7 @@ async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optio
 
 async def get_bookmyshow_poster(movie_name: str) -> Optional[str]:
     """
-    BookMyShow ਤੋਂ landscape poster ਲੱਭਣ ਦੀ ਕੋਸ਼ਿਸ਼।
-    (ਨੋਟ: ਇਹ ਇੱਕ basic implementation ਹੈ, API key ਨਾ ਹੋਣ 'ਤੇ web scraping ਵਰਤਦੀ ਹੈ)
+    BookMyShow ਤੋਂ landscape poster ਲੱਭਣ ਦੀ ਕੋਸ਼ਿਸ਼ (web scraping).
     """
     try:
         session = await get_session()
@@ -214,16 +199,12 @@ async def get_bookmyshow_poster(movie_name: str) -> Optional[str]:
             html_text = await resp.text()
             soup = BeautifulSoup(html_text, "html.parser")
             
-            # BookMyShow usually has event cards with images
-            # Looking for any image with event poster class
             img_tags = soup.find_all("img", {"class": re.compile(r"poster|event")})
             for img in img_tags:
                 src = img.get("data-src") or img.get("src")
                 if src and "bookmyshow" in src and "landscape" in src:
-                    # Ensure absolute URL and high resolution
                     if src.startswith("//"):
                         src = "https:" + src
-                    # Try to get original/large size
                     src = re.sub(r'/w\d+/', '/original/', src)
                     if src.endswith(('.jpg', '.jpeg', '.png')):
                         return src
@@ -249,12 +230,10 @@ async def get_pinterest_poster(movie_name: str) -> Optional[str]:
             html_text = await resp.text()
             soup = BeautifulSoup(html_text, "html.parser")
             
-            # Pinterest images are usually in img tags with srcset
             img_tags = soup.find_all("img")
             for img in img_tags:
                 srcset = img.get("srcset")
                 if srcset:
-                    # Get the largest image from srcset
                     urls = srcset.split(",")
                     largest_url = None
                     max_size = 0
@@ -271,7 +250,6 @@ async def get_pinterest_poster(movie_name: str) -> Optional[str]:
                 
                 src = img.get("src")
                 if src and "pinimg.com" in src and src.endswith(('.jpg', '.jpeg', '.png')):
-                    # Convert to high res original
                     src = re.sub(r'/\d+x/', '/originals/', src)
                     return src
             return None
@@ -292,7 +270,6 @@ async def get_landscape_poster_only(movie_name: str, is_series: bool = False) ->
             details = await get_movie_detailsx(movie_name)
             if details and details.get('backdrop_url'):
                 backdrop = details['backdrop_url']
-                # Ensure we get the ORIGINAL size
                 if "t/p/" in backdrop:
                     backdrop = re.sub(r'/t/p/w\d+/', '/t/p/original/', backdrop)
                     backdrop = re.sub(r'/t/p/w\d+x\d+/', '/t/p/original/', backdrop)
@@ -379,7 +356,6 @@ def extract_media_info(filename: str, caption: str):
     if not base_name:
         base_name = filename_normalized
 
-    # [FIX] For series, remove season number to group all episodes together
     if tag == "#SERIES":
         base_name = re.sub(r'\bS\d{1,2}\b', '', base_name, flags=re.IGNORECASE).strip()
         base_name = normalize(base_name)
@@ -516,7 +492,6 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
         if tmdb_language_override and tmdb_language_override != "N/A":
             final_language = tmdb_language_override
         else:
-            # ਫ਼ਾਈਲਨੇਮ ਤੋਂ ਕੱਢੀ ਭਾਸ਼ਾ (fallback)
             final_language = media_info["language"]
             if final_language == "N/A" or not final_language.strip():
                 final_language = "Hindi"
@@ -524,7 +499,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
         file_data["language"] = final_language
         
         # ======================================================
-        # ✅ POSTER SELECTION: Now checks TMDB -> Cinemeta -> BookMyShow -> Pinterest
+        # ✅ POSTER SELECTION: TMDB -> Cinemeta -> BookMyShow -> Pinterest
         # ======================================================
         final_poster = await get_landscape_poster_only(base_name, is_series)
 
@@ -581,7 +556,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
     except Exception as e:
         logger.error(f"Error in backend lock verification process: {e}")
 
-# ============ SEND MOVIE UPDATE (FIXED FOR SERIES) ============
+# ============ SEND MOVIE UPDATE ============
 
 async def send_movie_update(bot, base_name, is_update=False):
     try:
@@ -601,7 +576,6 @@ async def send_movie_update(bot, base_name, is_update=False):
 
         # --- UPDATE CASE (New Episode) ---
         if is_update and movie_doc.get("message_id"):
-            # Generate new poster with title overlay
             image_bytes = await create_title_only_poster(poster_url, base_name)
             if image_bytes:
                 media = InputMediaPhoto(media=image_bytes, caption=text, parse_mode=enums.ParseMode.HTML)
@@ -619,10 +593,9 @@ async def send_movie_update(bot, base_name, is_update=False):
                     return await send_movie_update(bot, base_name, is_update)
                 except MessageIdInvalid:
                     logger.warning(f"Message ID invalid for {base_name}, will send new.")
-                    is_update = False  # fallback to new send
+                    is_update = False
                 except Exception as e:
                     logger.error(f"Edit media error: {e}")
-                    # Try to at least update caption
                     try:
                         sent_msg = await bot.edit_message_caption(
                             chat_id=MOVIE_UPDATE_CHANNEL,
@@ -634,7 +607,6 @@ async def send_movie_update(bot, base_name, is_update=False):
                     except Exception:
                         pass
             else:
-                # Fallback: only caption
                 try:
                     sent_msg = await bot.edit_message_caption(
                         chat_id=MOVIE_UPDATE_CHANNEL,
@@ -655,7 +627,6 @@ async def send_movie_update(bot, base_name, is_update=False):
             if sent_msg:
                 return sent_msg
             else:
-                # If editing failed completely, DO NOT send new post (avoid duplicates)
                 logger.warning(f"Update failed for {base_name}, not creating duplicate.")
                 return None
 
@@ -704,8 +675,7 @@ async def send_movie_update(bot, base_name, is_update=False):
 
 async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, buttons):
     try:
-        await asyncio.sleep(60)  # 1 ਮਿੰਟ ਬਾਅਦ
-        
+        await asyncio.sleep(60)
         movie_doc = await db.movie_updates.find_one({"_id": base_name})
         if not movie_doc or not movie_doc.get("poster_url"):
             return
@@ -716,7 +686,6 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, 
             live_msg = await bot.get_messages(chat_id=MOVIE_UPDATE_CHANNEL, message_ids=message_id)
             if isinstance(live_msg, list) and live_msg:
                 live_msg = live_msg[0]
-                
             live_text = live_msg.caption if live_msg else ""
             
             if live_text and live_text.strip() == correct_text.strip():
@@ -729,7 +698,7 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, 
                 caption=correct_text,
                 reply_markup=buttons,
                 parse_mode=enums.ParseMode.HTML
-                )
+            )
             logger.info(f"✅ AI successfully auto-corrected post ID {message_id}!")
         except MessageNotModified:
             pass 
@@ -743,9 +712,10 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, 
     except Exception as e:
         logger.error(f"Critical error in AI Double-Check Engine: {e}")
 
-# ============ GENERATE MOVIE MESSAGE ============
+# ============ GENERATE MOVIE MESSAGE (No Genres, only Title, Language, Rating, Poster URL) ============
 
 def generate_movie_message(movie_doc, base_name) -> str:
+    # Collect all languages from files and movie doc
     all_languages = set()
     for file in movie_doc["files"]:
         if file.get("language") and file["language"] != "N/A":
@@ -754,30 +724,32 @@ def generate_movie_message(movie_doc, base_name) -> str:
     if movie_doc.get("language") and movie_doc["language"] != "N/A":
         all_languages.update(l.strip() for l in movie_doc["language"].split(",") if l.strip())
     
-    # Always prefer TMDB language from the document
-    language_str = " ".join(f"#{lang}" for lang in sorted(all_languages)) if all_languages else "#Hindi"
+    # If still empty, default to Hindi
+    if not all_languages:
+        all_languages.add("Hindi")
     
+    language_str = " + ".join(sorted(all_languages))  # Show as "Hindi + Tamil + Telugu"
+    
+    # Title with year
     title = html.escape(base_name.upper())
     title = re.sub(r'\b10BIT\b', '', title, flags=re.IGNORECASE)
     title = re.sub(r'\s+', ' ', title).strip()
     
     year_val = str(movie_doc.get("year", "")).strip()
     year_val = re.sub(r'[()\[\]]', '', year_val)
+    year_str = f" ({html.escape(year_val)})" if year_val and year_val != "None" and year_val not in title else ""
     
-    is_series = (movie_doc.get("tag") == "#SERIES")
-    
-    if is_series:
-        year_str = ""
-    else:
-        year_str = f" ({html.escape(year_val)})" if year_val and year_val != "None" and year_val not in title else ""
-    
+    # Rating
     rating_raw = movie_doc.get("rating", "N/A")
     rating_str = f"{rating_raw}/10" if rating_raw != "N/A" else "N/A"
     
+    # Poster URL (clickable link)
+    poster_url = movie_doc.get("poster_url", "N/A")
+    
+    # Build final message (No Genres)
     return (
-        f"🎬 <code>{title}{year_str}</code>\n"
-        f"<i>📌 (Touch To Copy)</i>\n\n"
-        f"⭐ IMDb: {rating_str}\n\n"
-        f"➡ Audio Track:- 🔊 {language_str}\n\n"
-        f"Added ✅"
-)
+        f"🎬 <b>Title:</b> <code>{title}{year_str}</code>\n"
+        f"🔊 <b>Language:</b> {language_str}\n"
+        f"⭐ <b>Rating:</b> {rating_str}\n"
+        f"🖼️ <b>Poster URL:</b> <a href='{poster_url}'>Link</a>"
+    )
