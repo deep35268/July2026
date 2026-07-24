@@ -590,7 +590,7 @@ async def send_movie_update(bot, base_name, is_update=False):
             return None
 
         text = generate_movie_message(movie_doc, base_name)
-        buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='♻️ 𝐉𝐎𝐈𝐍 𝐑𝐄𝐐𝐔𝐄𝐒𝐓 𝐆𝐑𝐎𝐔𝐏 ♻️ , url="https://t.me/+l-EIo3NnnJAxODE9")]])
+        buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='♻️ 𝐉𝐎𝐈𝐍 𝐑𝐄𝐐𝐔𝐄𝐒𝐓 𝐆𝐑𝐎𝐔𝐏 ♻️', url="https://t.me/+l-EIo3NnnJAxODE9")]])
         poster_url = movie_doc.get("poster_url")
 
         if not poster_url:
