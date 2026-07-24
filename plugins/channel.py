@@ -3,17 +3,12 @@ import logging
 import asyncio
 import aiohttp
 import html
-import io
-import textwrap
 import json
 from datetime import datetime
 from collections import defaultdict
 import urllib.parse
 from typing import Optional, Tuple, Dict, List
 from bs4 import BeautifulSoup
-
-# Pillow (PIL) for image editing
-from PIL import Image, ImageDraw, ImageFont
 
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
@@ -143,61 +138,6 @@ async def detect_language_with_ai(movie_name: str) -> str:
         logger.error(f"AI Language Detection Error: {e}")
     
     return "Hindi"
-
-# ============ HD POSTER WITH TITLE OVERLAY ============
-
-async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[bytes]:
-    """
-    HD Landscape Poster ਦੇ ਉੱਪਰ ਮੂਵੀ ਦਾ ਨਾਮ ਆਟੋਮੈਟਿਕ ਲਿਖਣ ਦਾ ਫੰਕਸ਼ਨ
-    """
-    try:
-        session = await get_session()
-        async with session.get(backdrop_url) as resp:
-            if resp.status != 200:
-                return None
-            img_data = await resp.read()
-        
-        image = Image.open(io.BytesIO(img_data)).convert("RGBA")
-        img_w, img_h = image.size
-        
-        draw = ImageDraw.Draw(image)
-        
-        try:
-            font_size = int(img_w * 0.08)
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-        except:
-            font = ImageFont.load_default()
-        
-        wrapped_title = textwrap.fill(title.upper(), width=16)
-        
-        bbox = draw.textbbox((0, 0), wrapped_title, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        
-        x = (img_w - text_w) // 2
-        y = (img_h - text_h) // 2
-        
-        # Background Overlay
-        overlay = Image.new('RGBA', (img_w, img_h), (0, 0, 0, 0))
-        overlay_draw = ImageDraw.Draw(overlay)
-        padding = 30
-        overlay_draw.rectangle(
-            [x - padding, y - padding, x + text_w + padding, y + text_h + padding],
-            fill=(0, 0, 0, 160)
-        )
-        image = Image.alpha_composite(image, overlay)
-        draw = ImageDraw.Draw(image)
-        
-        # Draw Text
-        draw.text((x, y), wrapped_title, font=font, fill=(255, 255, 255, 255))
-        
-        output = io.BytesIO()
-        image.convert("RGB").save(output, format="JPEG", quality=95)
-        return output.getvalue()
-        
-    except Exception as e:
-        logger.error(f"Title poster generation failed: {e}")
-        return None
 
 # ============ POSTER FETCHERS ============
 
@@ -412,7 +352,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
         
         file_data["language"] = final_language
         
-        # Poster Selection
+        # Poster Selection (Direct Poster URL Fetch)
         final_poster = await get_landscape_poster_only(base_name, is_series)
 
         if not final_poster:
@@ -459,32 +399,15 @@ async def send_movie_update(bot, base_name, is_update=False):
         buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='🔥 JOIN CHANNEL 🔥', url="https://t.me/+l-EIo3NnnJAxODE9")]])
         poster_url = movie_doc.get("poster_url")
 
-        # Generate Poster with Movie Title Overlay
-        image_bytes = await create_title_only_poster(poster_url, base_name)
-
-        if image_bytes:
-            # ✅ FIX: Bytes ਨੂੰ io.BytesIO ਨਾਲ ਫਾਈਲ ਆਬਜੈਕਟ ਵਿੱਚ ਕਨਵਰਟ ਕੀਤਾ
-            photo_file = io.BytesIO(image_bytes)
-            photo_file.name = "poster.jpg"
-
-            sent_msg = await bot.send_photo(
-                chat_id=MOVIE_UPDATE_CHANNEL,
-                photo=photo_file,
-                caption=text,
-                reply_markup=buttons,
-                parse_mode=enums.ParseMode.HTML
-            )
-            return sent_msg
-        else:
-            # Fallback to direct URL photo
-            sent_msg = await bot.send_photo(
-                chat_id=MOVIE_UPDATE_CHANNEL,
-                photo=poster_url,
-                caption=text,
-                reply_markup=buttons,
-                parse_mode=enums.ParseMode.HTML
-            )
-            return sent_msg
+        # Direct Poster URL Posting (No Image Editing/Text Overlay)
+        sent_msg = await bot.send_photo(
+            chat_id=MOVIE_UPDATE_CHANNEL,
+            photo=poster_url,
+            caption=text,
+            reply_markup=buttons,
+            parse_mode=enums.ParseMode.HTML
+        )
+        return sent_msg
 
     except Exception as e:
         logger.error(f"Failed to post update: {e}")
