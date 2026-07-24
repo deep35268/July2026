@@ -590,7 +590,7 @@ async def send_movie_update(bot, base_name, is_update=False):
             return None
 
         text = generate_movie_message(movie_doc, base_name)
-        buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='ðŸ”¥ ð‰ðŽðˆð ð‘ð„ðð”ð„ð’ð“ ð†ð‘ðŽð”ð âš¡', url="https://t.me/+l-EIo3NnnJAxODE9")]])
+        buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='♻️ 𝐉𝐎𝐈𝐍 𝐑𝐄𝐐𝐔𝐄𝐒𝐓 𝐆𝐑𝐎𝐔𝐏 ♻️ , url="https://t.me/+l-EIo3NnnJAxODE9")]])
         poster_url = movie_doc.get("poster_url")
 
         if not poster_url:
@@ -775,9 +775,9 @@ def generate_movie_message(movie_doc, base_name) -> str:
     rating_str = f"{rating_raw}/10" if rating_raw != "N/A" else "N/A"
     
     return (
-        f"ðŸŽ¬ <code>{title}{year_str}</code>\n"
-        f"<i>ðŸ“Œ (Touch To Copy)</i>\n\n"
-        f"â­ IMDb: {rating_str}\n\n"
-        f"âž¡ Audio Track:- ðŸ”Š {language_str}\n\n"
-        f"Added âœ…"
-)
+        f"🎬 {title}\n"
+        f"📌 (Touch To Copy)\n\n"
+        f"⭐ IMDb: {rating_str}\n\n"
+        f"➡ Audio Track:- 🔊 {language_str}\n\n"
+        f"Added ✅"
+    )
