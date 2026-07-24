@@ -19,6 +19,8 @@ aiofiles
 dnspython==2.7.0
 jinja2
 rapidfuzz
+google-generativeai
+Pillow
 
 # Git-based Packages
 git+https://github.com/DreamXBotz/IMDBKit.git@main
