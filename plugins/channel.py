@@ -65,30 +65,26 @@ IGNORE_WORDS = {
 
 # ============ TMDB LANGUAGE CODE TO FULL NAME MAPPING ============
 TMDB_LANG_MAP = {
-    "pa": "Punjabi", "hi": "Hindi", "ta": "Tamil", "te": "Telugu", "ml": "Malayalam",
-    "kn": "Kannada", "bn": "Bengali", "mr": "Marathi", "gu": "Gujarati", "ur": "Urdu",
-    "en": "English", "ko": "Korean", "ja": "Japanese", "es": "Spanish", "fr": "French",
-    "de": "German", "zh": "Chinese", "ru": "Russian", "it": "Italian", "pt": "Portuguese",
-    "ar": "Arabic", "nl": "Dutch", "sv": "Swedish", "pl": "Polish", "vi": "Vietnamese",
-    "th": "Thai", "id": "Indonesian", "ms": "Malay", "tr": "Turkish", "el": "Greek",
-    "he": "Hebrew", "cs": "Czech", "da": "Danish", "fi": "Finnish", "hu": "Hungarian",
-    "no": "Norwegian", "ro": "Romanian", "sk": "Slovak", "sl": "Slovenian", "hr": "Croatian",
+    "hi": "Hindi", "ta": "Tamil", "te": "Telugu", "ml": "Malayalam",
+    "kn": "Kannada", "en": "English", "bn": "Bengali", "mr": "Marathi",
+    "gu": "Gujarati", "pa": "Punjabi", "ur": "Urdu", "ko": "Korean",
+    "ja": "Japanese", "es": "Spanish", "fr": "French", "de": "German",
+    "zh": "Chinese", "ru": "Russian", "it": "Italian", "pt": "Portuguese",
+    "ar": "Arabic", "nl": "Dutch", "sv": "Swedish", "pl": "Polish",
+    "vi": "Vietnamese", "th": "Thai", "id": "Indonesian", "ms": "Malay",
+    "tr": "Turkish", "el": "Greek", "he": "Hebrew", "cs": "Czech",
+    "da": "Danish", "fi": "Finnish", "hu": "Hungarian", "no": "Norwegian",
+    "ro": "Romanian", "sk": "Slovak", "sl": "Slovenian", "hr": "Croatian",
 }
 
 CAPTION_LANGUAGES = {
-    "pun": "Punjabi", "punjabi": "Punjabi", "pa": "Punjabi",
-    "hin": "Hindi", "hindi": "Hindi", "hi": "Hindi",
-    "tam": "Tamil", "tamil": "Tamil", "ta": "Tamil",
-    "tel": "Telugu", "telugu": "Telugu", "te": "Telugu",
-    "kan": "Kannada", "kannada": "Kannada", "kn": "Kannada",
-    "mal": "Malayalam", "malayalam": "Malayalam", "ml": "Malayalam",
-    "eng": "English", "english": "English", "en": "English",
-    "ben": "Bengali", "bengali": "Bengali", "bn": "Bengali",
-    "mar": "Marathi", "marathi": "Marathi", "mr": "Marathi",
-    "guj": "Gujarati", "gujarati": "Gujarati", "gu": "Gujarati",
-    "urd": "Urdu", "urdu": "Urdu", "ur": "Urdu",
-    "kor": "Korean", "korean": "Korean", "ko": "Korean",
-    "jpn": "Japanese", "japanese": "Japanese", "ja": "Japanese",
+    "hin": "Hindi", "hindi": "Hindi", "tam": "Tamil", "tamil": "Tamil",
+    "kan": "Kannada", "kannada": "Kannada", "tel": "Telugu", "telugu": "Telugu",
+    "mal": "Malayalam", "malayalam": "Malayalam", "eng": "English", "english": "English",
+    "pun": "Punjabi", "punjabi": "Punjabi", "ben": "Bengali", "bengali": "Bengali",
+    "mar": "Marathi", "marathi": "Marathi", "guj": "Gujarati", "gujarati": "Gujarati",
+    "urd": "Urdu", "urdu": "Urdu", "kor": "Korean", "korean": "Korean",
+    "jpn": "Japanese", "japanese": "Japanese",
 }
 
 OTT_PLATFORMS = {
@@ -117,57 +113,68 @@ MEDIA_FILTER = filters.document | filters.video | filters.audio
 
 async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[bytes]:
     """
-    backdrop_url ਤੋਂ HD ਇਮੇਜ ਡਾਊਨਲੋਡ ਕਰੋ, ਉਸ 'ਤੇ ਸਿਰਫ਼ ਟਾਈਟਲ (ਵੱਡਾ, ਚਿੱਟਾ, ਸੈਂਟਰਡ) ਲਿਖੋ।
+    backdrop_url ਤੋਂ ਇਮੇਜ ਡਾਊਨਲੋਡ ਕਰੋ, ਉਸ 'ਤੇ ਸਿਰਫ਼ ਟਾਈਟਲ (ਵੱਡਾ, ਚਿੱਟਾ, ਸੈਂਟਰਡ) ਲਿਖੋ।
+    ਜੇਕਰ backdrop ਨਾ ਮਿਲੇ, ਤਾਂ None ਵਾਪਸ ਕਰੋ।
     """
     try:
-        session = await get_session()
-        async with session.get(backdrop_url, timeout=15) as resp:
-            if resp.status != 200:
-                return None
-            img_data = await resp.read()
+        # 1. Backdrop ਡਾਊਨਲੋਡ
+        async with aiohttp.ClientSession() as session:
+            async with session.get(backdrop_url) as resp:
+                if resp.status != 200:
+                    return None
+                img_data = await resp.read()
         
+        # 2. PIL Image ਖੋਲ੍ਹੋ
         image = Image.open(io.BytesIO(img_data)).convert("RGBA")
         img_w, img_h = image.size
         
+        # 3. Draw object
         draw = ImageDraw.Draw(image)
         
+        # 4. ਫੌਂਟ ਲੋਡ ਕਰੋ (Bold, ਵੱਡਾ)
         try:
-            font_size = int(img_w * 0.08)  # Scaled font size
+            font_size = int(img_w * 0.10)  # 10% of width
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
         except:
             font = ImageFont.load_default()
             font_size = 20
         
-        wrapped_title = textwrap.fill(title.upper(), width=16)
+        # 5. ਟਾਈਟਲ ਨੂੰ wrap ਕਰੋ
+        wrapped_title = textwrap.fill(title.upper(), width=14)
         
+        # 6. ਟੈਕਸਟ ਦਾ size ਮਾਪੋ
         bbox = draw.textbbox((0, 0), wrapped_title, font=font)
         text_w = bbox[2] - bbox[0]
         text_h = bbox[3] - bbox[1]
         
+        # 7. Center coordinates
         x = (img_w - text_w) // 2
-        y = (img_h - text_h) // 2 - int(text_h * 0.1)
+        y = (img_h - text_h) // 2 - int(text_h * 0.2)
         
+        # 8. Background overlay (semi-transparent black for readability)
         overlay = Image.new('RGBA', (img_w, img_h), (0, 0, 0, 0))
         overlay_draw = ImageDraw.Draw(overlay)
         padding = 25
         overlay_draw.rectangle(
             [x - padding, y - padding, x + text_w + padding, y + text_h + padding],
-            fill=(0, 0, 0, 160)
+            fill=(0, 0, 0, 170)
         )
         image = Image.alpha_composite(image, overlay)
         draw = ImageDraw.Draw(image)
         
+        # 9. White text
         draw.text((x, y), wrapped_title, font=font, fill=(255, 255, 255, 255))
         
+        # 10. Bytes output
         output = io.BytesIO()
-        image.convert("RGB").save(output, format="JPEG", quality=95)
+        image.convert("RGB").save(output, format="JPEG", quality=92)
         return output.getvalue()
         
     except Exception as e:
         logger.error(f"Title-only poster generation failed: {e}")
         return None
 
-# ============ AI & OFFICIAL HD LANDSCAPE POSTER SYSTEM ============
+# ============ AI & OFFICIAL LANDSCAPE VALIDATION SYSTEM ============
 
 async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optional[str]:
     try:
@@ -184,60 +191,130 @@ async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optio
                     best_match = metas[0]
                     background = best_match.get("background")
                     if background and any(x in background for x in ["images.metahub.space", "tmdb", "themoviedb"]):
-                        # HD Conversion
-                        if "t/p/" in background:
-                            background = re.sub(r'/t/p/w\d+/', '/t/p/original/', background)
                         return background
     except Exception as e:
         logger.error(f"Cinemeta AI Metadata Error: {e}")
     return None
 
-async def fetch_tmdb_hd_landscape(movie_name: str, is_series: bool = False) -> Optional[str]:
-    """TMDB API ਤੋਂ ਖ਼ਾਸ ਤੌਰ 'ਤੇ ਅਸਲੀ HD Landscape Poster (Backdrop) ਫੈੱਚ ਕਰੋ"""
-    if not TMDB_API_KEY:
-        return None
+# ============ BOOKMYSHOW POSTER FETCHER ============
+
+async def get_bookmyshow_poster(movie_name: str) -> Optional[str]:
+    """
+    BookMyShow ਤੋਂ landscape poster ਲੱਭਣ ਦੀ ਕੋਸ਼ਿਸ਼।
+    (ਨੋਟ: ਇਹ ਇੱਕ basic implementation ਹੈ, API key ਨਾ ਹੋਣ 'ਤੇ web scraping ਵਰਤਦੀ ਹੈ)
+    """
     try:
         session = await get_session()
-        m_type = "tv" if is_series else "movie"
-        query = urllib.parse.quote(movie_name)
-        url = f"https://api.themoviedb.org/3/search/{m_type}?api_key={TMDB_API_KEY}&query={query}"
+        search_url = f"https://in.bookmyshow.com/search?searchText={urllib.parse.quote(movie_name)}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         
-        async with session.get(url, timeout=10) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                results = data.get("results", [])
-                if results:
-                    backdrop_path = results[0].get("backdrop_path")
-                    if backdrop_path:
-                        return f"https://image.tmdb.org/t/p/original{backdrop_path}"
+        async with session.get(search_url, headers=headers, timeout=10) as resp:
+            if resp.status != 200:
+                return None
+            html_text = await resp.text()
+            soup = BeautifulSoup(html_text, "html.parser")
+            
+            # BookMyShow usually has event cards with images
+            # Looking for any image with event poster class
+            img_tags = soup.find_all("img", {"class": re.compile(r"poster|event")})
+            for img in img_tags:
+                src = img.get("data-src") or img.get("src")
+                if src and "bookmyshow" in src and "landscape" in src:
+                    # Ensure absolute URL and high resolution
+                    if src.startswith("//"):
+                        src = "https:" + src
+                    # Try to get original/large size
+                    src = re.sub(r'/w\d+/', '/original/', src)
+                    if src.endswith(('.jpg', '.jpeg', '.png')):
+                        return src
+            return None
     except Exception as e:
-        logger.error(f"TMDB direct HD landscape fetch error: {e}")
-    return None
+        logger.error(f"BookMyShow Poster Error: {e}")
+        return None
+
+# ============ PINTEREST POSTER FETCHER ============
+
+async def get_pinterest_poster(movie_name: str) -> Optional[str]:
+    """
+    Pinterest ਤੋਂ landscape poster ਲੱਭਣ ਦੀ ਕੋਸ਼ਿਸ਼ (web scraping).
+    """
+    try:
+        session = await get_session()
+        search_url = f"https://in.pinterest.com/search/pins/?q={urllib.parse.quote(movie_name + ' movie landscape')}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        
+        async with session.get(search_url, headers=headers, timeout=10) as resp:
+            if resp.status != 200:
+                return None
+            html_text = await resp.text()
+            soup = BeautifulSoup(html_text, "html.parser")
+            
+            # Pinterest images are usually in img tags with srcset
+            img_tags = soup.find_all("img")
+            for img in img_tags:
+                srcset = img.get("srcset")
+                if srcset:
+                    # Get the largest image from srcset
+                    urls = srcset.split(",")
+                    largest_url = None
+                    max_size = 0
+                    for part in urls:
+                        parts = part.strip().split(" ")
+                        if len(parts) == 2 and parts[1].endswith("w"):
+                            url = parts[0]
+                            size = int(parts[1][:-1])
+                            if size > max_size:
+                                max_size = size
+                                largest_url = url
+                    if largest_url:
+                        return largest_url
+                
+                src = img.get("src")
+                if src and "pinimg.com" in src and src.endswith(('.jpg', '.jpeg', '.png')):
+                    # Convert to high res original
+                    src = re.sub(r'/\d+x/', '/originals/', src)
+                    return src
+            return None
+    except Exception as e:
+        logger.error(f"Pinterest Poster Error: {e}")
+        return None
+
+# ============ MAIN LANDSCAPE POSTER FUNCTION (WITH FALLBACKS) ============
 
 async def get_landscape_poster_only(movie_name: str, is_series: bool = False) -> Optional[str]:
-    # 1. TMDB Direct HD Backdrop
-    tmdb_hd = await fetch_tmdb_hd_landscape(movie_name, is_series)
-    if tmdb_hd:
-        return tmdb_hd
-
-    # 2. Imdbposter Plugin Fallback
+    """
+    ਪ੍ਰਾਥਮਿਕਤਾ ਕ੍ਰਮ: TMDB -> Cinemeta (AI) -> BookMyShow -> Pinterest
+    ਸਭ ਤੋਂ ਵਧੀਆ ਲੈਂਡਸਕੇਪ ਪੋਸਟਰ (HD/Original) ਵਾਪਸ ਕਰਦਾ ਹੈ।
+    """
+    # 1. TMDB (primary & most reliable)
     if LANDSCAPE_POSTER:
         try:
             details = await get_movie_detailsx(movie_name)
             if details and details.get('backdrop_url'):
                 backdrop = details['backdrop_url']
+                # Ensure we get the ORIGINAL size
                 if "t/p/" in backdrop:
                     backdrop = re.sub(r'/t/p/w\d+/', '/t/p/original/', backdrop)
                     backdrop = re.sub(r'/t/p/w\d+x\d+/', '/t/p/original/', backdrop)
                 return backdrop
         except Exception as e:
             logger.error(f"TMDB backdrop error: {e}")
-    
-    # 3. Cinemeta AI HD Background Fallback
+
+    # 2. Cinemeta AI (fallback 1)
     ai_backdrop = await fetch_cinemeta_ai_poster(movie_name, is_series)
     if ai_backdrop:
         return ai_backdrop
-        
+
+    # 3. BookMyShow (fallback 2)
+    bms_poster = await get_bookmyshow_poster(movie_name)
+    if bms_poster:
+        return bms_poster
+
+    # 4. Pinterest (fallback 3)
+    pinterest_poster = await get_pinterest_poster(movie_name)
+    if pinterest_poster:
+        return pinterest_poster
+
     return None
 
 # ============ CLEANING AND EXTRACTION FUNCTIONS ============
@@ -302,6 +379,7 @@ def extract_media_info(filename: str, caption: str):
     if not base_name:
         base_name = filename_normalized
 
+    # [FIX] For series, remove season number to group all episodes together
     if tag == "#SERIES":
         base_name = re.sub(r'\bS\d{1,2}\b', '', base_name, flags=re.IGNORECASE).strip()
         base_name = normalize(base_name)
@@ -432,21 +510,22 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
 
         year_val = year_val or None
         
-        # ✅ LANGUAGE DETECTION FIX:
-        # TMDB ਦੀ Original Language ਨੂੰ ਸਭ ਤੋਂ ਪਹਿਲਾਂ ਰੱਖੋ, ਤਾਂ ਜੋ ਬੋਟ ਹਰ ਚੀਜ਼ ਨੂੰ ਇੰਗਲਿਸ਼ ਨਾ ਲਿਖੇ।
-        file_lang = media_info["language"]
-        if tmdb_language_override:
-            if file_lang == "N/A" or file_lang == "English":
-                final_language = tmdb_language_override
-            else:
-                existing = set(l.strip() for l in file_lang.split(","))
-                existing.add(tmdb_language_override)
-                final_language = ", ".join(sorted(existing))
+        # ======================================================
+        # ✅ LANGUAGE FIX: TMDB original_language ਨੂੰ ਹਮੇਸ਼ਾ ਪਹਿਲ ਦਿਓ
+        # ======================================================
+        if tmdb_language_override and tmdb_language_override != "N/A":
+            final_language = tmdb_language_override
         else:
-            final_language = file_lang if file_lang != "N/A" else "Hindi"
+            # ਫ਼ਾਈਲਨੇਮ ਤੋਂ ਕੱਢੀ ਭਾਸ਼ਾ (fallback)
+            final_language = media_info["language"]
+            if final_language == "N/A" or not final_language.strip():
+                final_language = "Hindi"
         
         file_data["language"] = final_language
         
+        # ======================================================
+        # ✅ POSTER SELECTION: Now checks TMDB -> Cinemeta -> BookMyShow -> Pinterest
+        # ======================================================
         final_poster = await get_landscape_poster_only(base_name, is_series)
 
         if not final_poster:
@@ -502,7 +581,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
     except Exception as e:
         logger.error(f"Error in backend lock verification process: {e}")
 
-# ============ SEND MOVIE UPDATE ============
+# ============ SEND MOVIE UPDATE (FIXED FOR SERIES) ============
 
 async def send_movie_update(bot, base_name, is_update=False):
     try:
@@ -520,8 +599,9 @@ async def send_movie_update(bot, base_name, is_update=False):
 
         sent_msg = None
 
-        # --- UPDATE CASE (New Episode/Quality) ---
+        # --- UPDATE CASE (New Episode) ---
         if is_update and movie_doc.get("message_id"):
+            # Generate new poster with title overlay
             image_bytes = await create_title_only_poster(poster_url, base_name)
             if image_bytes:
                 media = InputMediaPhoto(media=image_bytes, caption=text, parse_mode=enums.ParseMode.HTML)
@@ -539,9 +619,10 @@ async def send_movie_update(bot, base_name, is_update=False):
                     return await send_movie_update(bot, base_name, is_update)
                 except MessageIdInvalid:
                     logger.warning(f"Message ID invalid for {base_name}, will send new.")
-                    is_update = False
+                    is_update = False  # fallback to new send
                 except Exception as e:
                     logger.error(f"Edit media error: {e}")
+                    # Try to at least update caption
                     try:
                         sent_msg = await bot.edit_message_caption(
                             chat_id=MOVIE_UPDATE_CHANNEL,
@@ -553,6 +634,7 @@ async def send_movie_update(bot, base_name, is_update=False):
                     except Exception:
                         pass
             else:
+                # Fallback: only caption
                 try:
                     sent_msg = await bot.edit_message_caption(
                         chat_id=MOVIE_UPDATE_CHANNEL,
@@ -573,6 +655,7 @@ async def send_movie_update(bot, base_name, is_update=False):
             if sent_msg:
                 return sent_msg
             else:
+                # If editing failed completely, DO NOT send new post (avoid duplicates)
                 logger.warning(f"Update failed for {base_name}, not creating duplicate.")
                 return None
 
@@ -621,7 +704,7 @@ async def send_movie_update(bot, base_name, is_update=False):
 
 async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, buttons):
     try:
-        await asyncio.sleep(60)
+        await asyncio.sleep(60)  # 1 ਮਿੰਟ ਬਾਅਦ
         
         movie_doc = await db.movie_updates.find_one({"_id": base_name})
         if not movie_doc or not movie_doc.get("poster_url"):
@@ -646,7 +729,7 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, 
                 caption=correct_text,
                 reply_markup=buttons,
                 parse_mode=enums.ParseMode.HTML
-            )
+                )
             logger.info(f"✅ AI successfully auto-corrected post ID {message_id}!")
         except MessageNotModified:
             pass 
@@ -671,6 +754,7 @@ def generate_movie_message(movie_doc, base_name) -> str:
     if movie_doc.get("language") and movie_doc["language"] != "N/A":
         all_languages.update(l.strip() for l in movie_doc["language"].split(",") if l.strip())
     
+    # Always prefer TMDB language from the document
     language_str = " ".join(f"#{lang}" for lang in sorted(all_languages)) if all_languages else "#Hindi"
     
     title = html.escape(base_name.upper())
@@ -696,4 +780,4 @@ def generate_movie_message(movie_doc, base_name) -> str:
         f"⭐ IMDb: {rating_str}\n\n"
         f"➡ Audio Track:- 🔊 {language_str}\n\n"
         f"Added ✅"
-    )
+)
