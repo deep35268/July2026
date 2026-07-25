@@ -9,6 +9,8 @@ from collections import defaultdict
 import urllib.parse
 from typing import Optional, Tuple, Dict, List
 from bs4 import BeautifulSoup
+import io
+from PIL import Image, ImageDraw, ImageFont  # ਟੈਕਸਟ ਓਵਰਲੇ ਲਈ (ਜੇਕਰ ਲੋੜ ਹੋਵੇ)
 
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
@@ -24,13 +26,13 @@ from Script import script
 from info import (
     CHANNELS, MOVIE_UPDATE_CHANNEL, LINK_PREVIEW, ABOVE_PREVIEW, 
     BAD_WORDS, LANDSCAPE_POSTER, TMDB_POSTER, NOR_IMG, IMDB_TEMPLATE,
-    TMDB_API_KEY
+    TMDB_API_KEY, GEMINI_API_KEY  # ← ਇਹ info.py ਤੋਂ ਆ ਰਿਹਾ ਹੈ
 )
 
 logger = logging.getLogger(__name__)
 
 # ============ GEMINI AI CONFIGURATION ============
-GEMINI_API_KEY = "AIzaSyCUuLfxuwA19ILtBjuWTZFUlPe1y7tA0JA"
+# GEMINI_API_KEY ਹੁਣ info.py ਤੋਂ import ਹੋ ਰਿਹਾ ਹੈ
 
 SESSION: Optional[aiohttp.ClientSession] = None
 
@@ -99,14 +101,16 @@ EPISODE_CLEAN_PATTERN = re.compile(r'\b(S\d{1,2}|E\d{1,3}|Ep\d{1,3}|Episode\s*\d
 
 MEDIA_FILTER = filters.document | filters.video | filters.audio
 
-# ============ AI LANGUAGE DETECTION (DIRECT API CALL) ============
-
-async def detect_language_with_ai(movie_name: str) -> str:
+# ================================================================
+# 🧠 AI LANGUAGE DETECTION (FIXED - NO DEFAULT HINDI)
+# ================================================================
+async def detect_language_with_ai(movie_name: str) -> Optional[str]:
     """
     Direct REST API ਨਾਲ Gemini AI ਦੁਆਰਾ ਸਹੀ ਭਾਸ਼ਾ ਪਛਾਣਨ ਵਾਲਾ ਫੰਕਸ਼ਨ
     """
     if not GEMINI_API_KEY:
-        return "Hindi"
+        logger.warning("GEMINI_API_KEY not set. Skipping AI detection.")
+        return None
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     
@@ -115,12 +119,13 @@ async def detect_language_with_ai(movie_name: str) -> str:
     Task: Identify the exact primary original audio language of the movie/show titled: "{movie_name}".
 
     STRICT RULES:
-    1. DO NOT DEFAULT TO ENGLISH.
-    2. Check the cast, director, region, and title (e.g., "Warning 2" is Punjabi, "Carry On Jatta" is Punjabi, "Thukra Ke Mera Pyaar" is Hindi).
-    3. Output strictly raw JSON format without markdown code blocks.
+    1. Analyze the title, origin country, director, and actors associated with this title.
+    2. Output strictly raw JSON format without markdown code blocks.
+    3. If the title is ambiguous or if you are not 100% sure, return "Unknown".
+    4. DO NOT default to "English" or "Hindi" just because you are unsure.
 
     JSON Structure:
-    {{"language": "Punjabi"}}
+    {{"language": "Punjabi"}} or {{"language": "Unknown"}}
     """
     
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -133,54 +138,88 @@ async def detect_language_with_ai(movie_name: str) -> str:
                 text_resp = result['candidates'][0]['content']['parts'][0]['text']
                 clean_json = text_resp.replace("```json", "").replace("```", "").strip()
                 data = json.loads(clean_json)
-                return data.get("language", "Hindi").title()
+                lang = data.get("language")
+                if lang and lang != "Unknown":
+                    return lang.title()
+                return None
+            else:
+                logger.error(f"Gemini API returned status {resp.status}")
+                return None
     except Exception as e:
         logger.error(f"AI Language Detection Error: {e}")
-    
-    return "Hindi"
+        return None  # ❌ IKKO HINDI NAHI RETURN KAREGA
 
-# ============ POSTER FETCHERS ============
-
-async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optional[str]:
+# ================================================================
+# 🖼️ GOOGLE IMAGES HD POSTER FETCHER (NO CHROMEDRIVER REQUIRED)
+# ================================================================
+async def fetch_google_poster(movie_name: str) -> Optional[bytes]:
+    """
+    Google Images ਤੋਂ HD ਮੂਵੀ ਪੋਸਟਰ ਲੱਭੋ (ਜਿਸ 'ਤੇ ਮੂਵੀ ਦਾ ਨਾਮ ਲਿਖਿਆ ਹੋਵੇ)
+    """
     try:
-        session = await get_session()
-        m_type = "series" if is_series else "movie"
-        encoded_query = urllib.parse.quote(query)
+        search_query = f"{movie_name} movie poster hd"
+        encoded_query = urllib.parse.quote(search_query)
+        url = f"https://www.google.com/search?q={encoded_query}&tbm=isch"
         
-        search_url = f"https://v3-cinemeta.strem.io/catalog/{m_type}/top/search={encoded_query}.json"
-        async with session.get(search_url, timeout=10) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                metas = data.get("metas", [])
-                if metas:
-                    best_match = metas[0]
-                    background = best_match.get("background")
-                    if background and any(x in background for x in ["images.metahub.space", "tmdb", "themoviedb"]):
-                        return background
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        session = await get_session()
+        async with session.get(url, headers=headers, timeout=15) as resp:
+            if resp.status != 200:
+                return None
+            html_content = await resp.text()
+        
+        soup = BeautifulSoup(html_content, 'html.parser')
+        # Google Images 'ਚ ਪਹਿਲੀ ਵੱਡੀ ਫੋਟੋ ਲੱਭੋ
+        img_tag = soup.find('img', {'class': 'rg_i'}) or soup.find('img', {'jsname': 'Q4LuWd'})
+        
+        img_url = None
+        if img_tag:
+            img_url = img_tag.get('src') or img_tag.get('data-src')
+        
+        if not img_url:
+            # ਕਦੇ-ਕਦੇ src base64 ਹੁੰਦਾ ਹੈ, ਤਾਂ ਅਸੀਂ data-src ਖੋਜਦੇ ਹਾਂ
+            for tag in soup.find_all('img'):
+                if tag.get('data-src') and 'http' in tag['data-src']:
+                    img_url = tag['data-src']
+                    break
+        
+        if not img_url or not img_url.startswith('http'):
+            return None
+        
+        # ਫੋਟੋ ਡਾਊਨਲੋਡ ਕਰੋ
+        async with session.get(img_url, headers=headers, timeout=15) as img_resp:
+            if img_resp.status == 200:
+                return await img_resp.read()
+            return None
+            
     except Exception as e:
-        logger.error(f"Cinemeta AI Metadata Error: {e}")
+        logger.error(f"Google Poster Fetch Error: {e}")
+        return None
+
+# ================================================================
+# 🖼️ TMDB POSTER FETCHER
+# ================================================================
+async def fetch_tmdb_poster(movie_name: str) -> Optional[str]:
+    """
+    TMDB API ਤੋਂ ਪੋਸਟਰ URL ਲਓ।
+    """
+    try:
+        details = await get_movie_detailsx(movie_name)
+        if details and details.get('poster_url'):
+            poster = details['poster_url']
+            if "t/p/w" in poster:
+                poster = re.sub(r'/t/p/w\d+/', '/t/p/original/', poster)
+            return poster
+    except Exception as e:
+        logger.error(f"TMDB Poster Fetch Error: {e}")
     return None
 
-async def get_landscape_poster_only(movie_name: str, is_series: bool = False) -> Optional[str]:
-    if LANDSCAPE_POSTER:
-        try:
-            details = await get_movie_detailsx(movie_name)
-            if details and details.get('backdrop_url'):
-                backdrop = details['backdrop_url']
-                if "t/p/" in backdrop:
-                    backdrop = re.sub(r'/t/p/w\d+/', '/t/p/original/', backdrop)
-                return backdrop
-        except Exception as e:
-            logger.error(f"TMDB backdrop error: {e}")
-
-    ai_backdrop = await fetch_cinemeta_ai_poster(movie_name, is_series)
-    if ai_backdrop:
-        return ai_backdrop
-
-    return None
-
-# ============ CLEANING AND EXTRACTION FUNCTIONS ============
-
+# ================================================================
+# 🧹 CLEANING AND EXTRACTION FUNCTIONS
+# ================================================================
 def clean_mentions_links(text: str) -> str:
     return CLEAN_PATTERN.sub("", text or "").strip()
 
@@ -253,8 +292,9 @@ def extract_media_info(filename: str, caption: str):
         "language": language
     }
 
-# ============ MAIN HANDLERS ============
-
+# ================================================================
+# 📥 MAIN HANDLERS
+# ================================================================
 @Client.on_message(filters.chat(CHANNELS) & MEDIA_FILTER)
 async def media_handler(bot, message):
     media = next((getattr(message, ft) for ft in ("document", "video", "audio") if getattr(message, ft, None)), None)
@@ -300,8 +340,9 @@ async def process_and_send_update(bot, filename, caption):
     except Exception as e:
         logger.exception(f"Processing execution failed: {e}")
 
-# ============ PROCESS WITH LOCK ============
-
+# ================================================================
+# 🔒 PROCESS WITH LOCK (LANGUAGE FIX APPLIED)
+# ================================================================
 async def _process_with_lock(bot, filename, caption, media_info, base_name):
     if not hasattr(db, 'movie_updates'):
         db.movie_updates = db.db.movie_updates
@@ -338,39 +379,98 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
         is_series = (media_info["tag"] == "#SERIES")
 
         # ======================================================
-        # ✅ LANGUAGE FIX: TMDB -> Gemini AI Detection
+        # ✅ LANGUAGE FIX: TMDB -> Gemini AI -> Filename -> Unknown
         # ======================================================
+        final_language = None
+
+        # 1. TMDB ਤੋਂ ਮਿਲੀ ਭਾਸ਼ਾ
         if tmdb_language_override and tmdb_language_override != "N/A":
             final_language = tmdb_language_override
-        else:
-            logger.info(f"Fetching AI Language for: {base_name}")
+            logger.info(f"✅ Language from TMDB for {base_name}: {final_language}")
+
+        # 2. ਜੇਕਰ TMDB ਨਾ ਮਿਲੇ, ਤਾਂ Gemini AI ਵਰਤੋਂ
+        if not final_language:
+            logger.info(f"🔍 Fetching AI Language for: {base_name}")
             ai_lang = await detect_language_with_ai(base_name)
-            if ai_lang and ai_lang != "English":
+            if ai_lang and ai_lang != "Unknown":
                 final_language = ai_lang
-            else:
-                final_language = media_info["language"] if media_info["language"] != "N/A" else "Hindi"
-        
+                logger.info(f"✅ Language from AI for {base_name}: {final_language}")
+
+        # 3. ਜੇਕਰ ਉੱਪਰੋਂ ਕੁਝ ਨਾ ਮਿਲੇ, ਤਾਂ ਫਾਈਲਨੇਮ/ਕੈਪਸ਼ਨ ਤੋਂ ਲੱਭੋ
+        if not final_language:
+            if media_info["language"] != "N/A":
+                final_language = media_info["language"]
+                logger.info(f"✅ Language from filename/caption for {base_name}: {final_language}")
+
+        # 4. ਅੰਤ ਵਿੱਚ ਕੁਝ ਨਾ ਮਿਲੇ ਤਾਂ 'Unknown' ਰੱਖੋ (Hindi ਨਹੀਂ)
+        if not final_language:
+            final_language = "Unknown"
+            logger.warning(f"⚠️ No language found for {base_name}. Marked as Unknown.")
+
         file_data["language"] = final_language
+
+        # ======================================================
+        # 🖼️ POSTER FETCH: Google -> TMDB (Fallback)
+        # ======================================================
+        poster_bytes = None
+        poster_url = None
+        final_poster = None
+
+        # 1. ਪਹਿਲਾਂ Google Images ਤੋਂ HD ਪੋਸਟਰ ਲੱਭੋ
+        logger.info(f"🔍 Searching Google for poster: {base_name}")
+        poster_bytes = await fetch_google_poster(base_name)
+        if poster_bytes:
+            final_poster = poster_bytes  # ਇਹ bytes ਵਿੱਚ ਹੈ
+            logger.info(f"✅ Google poster found for {base_name}")
         
-        # Poster Selection (Direct Poster URL Fetch)
-        final_poster = await get_landscape_poster_only(base_name, is_series)
+        # 2. ਜੇਕਰ Google ਤੋਂ ਨਾ ਮਿਲੇ, ਤਾਂ TMDB poster/backdrop ਵਰਤੋਂ
+        if not final_poster:
+            logger.info(f"🔍 Falling back to TMDB for poster: {base_name}")
+            # a) TMDB Poster URL
+            poster_url = await fetch_tmdb_poster(base_name)
+            if poster_url:
+                final_poster = poster_url  # ਇਹ URL ਹੈ
+                logger.info(f"✅ TMDB poster found for {base_name}")
+            else:
+                # b) TMDB Backdrop (Landscape)
+                backdrop = await get_landscape_poster_only(base_name, is_series)
+                if backdrop:
+                    final_poster = backdrop
+                    logger.info(f"✅ TMDB backdrop found for {base_name}")
 
         if not final_poster:
-            logger.info(f"Poster NOT found for '{base_name}'. Skipping.")
+            logger.info(f"❌ No poster found for '{base_name}'. Skipping.")
             return
 
+        # Database 'ਚ ਸੇਵ ਕਰਨ ਤੋਂ ਪਹਿਲਾਂ poster URL/bytes store ਕਰੀਏ
+        # ਮੈਂ ਇੱਥੇ poster_url ਨੂੰ store ਕਰ ਰਿਹਾ ਹਾਂ, ਪਰ ਜੇਕਰ bytes ਹੈ ਤਾਂ ਅਸੀਂ ਉਸ ਨੂੰ 
+        # send_movie_update 'ਚ handle ਕਰਾਂਗੇ। ਆਸਾਨੀ ਲਈ ਮੈਂ final_poster ਨੂੰ ਇੱਕ variable 'ਚ ਰੱਖਦਾ ਹਾਂ।
+        
         existing_movie = await db.movie_updates.find_one({"_id": base_name})
         if existing_movie:
             file_exists = any(f.get("filename") == filename for f in existing_movie.get("files", []))
             if not file_exists:
                 await db.movie_updates.update_one({"_id": base_name}, {"$push": {"files": file_data}})
-                await send_movie_update(bot, base_name, is_update=True)
+                # updated poster ਭੇਜਣ ਲਈ, ਅਸੀਂ final_poster ਨੂੰ db 'ਚ save ਕਰਾਂਗੇ?
+                # ਜਾਂ ਅਸੀਂ ਸਿੱਧਾ send_movie_update 'ਚ ਭੇਜ ਦੇਵਾਂਗੇ (ਜੋ db ਤੋਂ ਪੜ੍ਹਦਾ ਹੈ)
+                # ਆਓ ਅਸੀਂ db 'ਚ poster_url ਨੂੰ update ਕਰੀਏ ਜੇਕਰ ਇਹ URL ਹੈ
+                if isinstance(final_poster, str) and final_poster.startswith('http'):
+                    await db.movie_updates.update_one({"_id": base_name}, {"$set": {"poster_url": final_poster}})
+                await send_movie_update(bot, base_name, is_update=True, poster_data=final_poster)
             return
 
+        # ਨਵੀਂ movie ਲਈ
+        # ਜੇਕਰ final_poster bytes ਹੈ, ਤਾਂ ਅਸੀਂ ਉਸ ਨੂੰ DB 'ਚ ਨਹੀਂ ਸੇਵ ਕਰ ਸਕਦੇ (MongoDB ਲਈ ਵੱਡਾ ਹੈ)
+        # ਇਸ ਲਈ ਅਸੀਂ ਸਿਰਫ਼ URL ਸੇਵ ਕਰਾਂਗੇ (ਜਾਂ ਅਸੀਂ poster_bytes ਨੂੰ send_movie_update 'ਚ pass ਕਰਾਂਗੇ)
+        # ਆਓ async function 'ਚ poster_data pass ਕਰੀਏ
+        poster_url_to_save = None
+        if isinstance(final_poster, str) and final_poster.startswith('http'):
+            poster_url_to_save = final_poster
+        
         movie_doc = {
             "_id": base_name,
             "files": [file_data],
-            "poster_url": final_poster,
+            "poster_url": poster_url_to_save,  # ਸਿਰਫ਼ URL, bytes ਨਹੀਂ
             "rating": rating_val,
             "year": year_val,
             "tag": media_info["tag"],
@@ -380,43 +480,73 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
         }
         
         await db.movie_updates.insert_one(movie_doc)
-        msg = await send_movie_update(bot, base_name, is_update=False)
+        # poster_data ਨੂੰ ਫੰਕਸ਼ਨ 'ਚ pass ਕਰੋ
+        msg = await send_movie_update(bot, base_name, is_update=False, poster_data=final_poster)
         if msg:
             await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": msg.id}})
 
     except Exception as e:
         logger.error(f"Error in lock process: {e}")
 
-# ============ SEND MOVIE UPDATE ============
-
-async def send_movie_update(bot, base_name, is_update=False):
+# ================================================================
+# 📤 SEND MOVIE UPDATE (WITH POSTER FALLBACK)
+# ================================================================
+async def send_movie_update(bot, base_name, is_update=False, poster_data=None):
     try:
         movie_doc = await db.movie_updates.find_one({"_id": base_name})
-        if not movie_doc or not movie_doc.get("poster_url"):
+        if not movie_doc:
             return None
 
         text = generate_movie_message(movie_doc, base_name)
         buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='♻️ 𝐉𝐎𝐈𝐍 𝐑𝐄𝐐𝐔𝐄𝐒𝐓 𝐆𝐑𝐎𝐔𝐏 ♻️', url="https://t.me/+l-EIo3NnnJAxODE9")]])
+        
+        # 1. ਜੇਕਰ poster_data pass ਕੀਤਾ ਗਿਆ ਹੈ (bytes ਜਾਂ URL)
+        if poster_data:
+            if isinstance(poster_data, bytes):
+                # bytes ਹੈ -> ਸਿੱਧਾ ਭੇਜੋ
+                sent_msg = await bot.send_photo(
+                    chat_id=MOVIE_UPDATE_CHANNEL,
+                    photo=poster_data,
+                    caption=text,
+                    reply_markup=buttons,
+                    parse_mode=enums.ParseMode.HTML
+                )
+                return sent_msg
+            elif isinstance(poster_data, str) and poster_data.startswith('http'):
+                # URL ਹੈ -> URL ਵਰਤੋਂ
+                sent_msg = await bot.send_photo(
+                    chat_id=MOVIE_UPDATE_CHANNEL,
+                    photo=poster_data,
+                    caption=text,
+                    reply_markup=buttons,
+                    parse_mode=enums.ParseMode.HTML
+                )
+                return sent_msg
+        
+        # 2. ਜੇਕਰ poster_data ਨਹੀਂ ਮਿਲਿਆ, DB ਤੋਂ URL ਲਓ
         poster_url = movie_doc.get("poster_url")
-
-        # Direct Poster URL Posting (No Image Editing/Text Overlay)
-        sent_msg = await bot.send_photo(
-            chat_id=MOVIE_UPDATE_CHANNEL,
-            photo=poster_url,
-            caption=text,
-            reply_markup=buttons,
-            parse_mode=enums.ParseMode.HTML
-        )
-        return sent_msg
+        if poster_url:
+            sent_msg = await bot.send_photo(
+                chat_id=MOVIE_UPDATE_CHANNEL,
+                photo=poster_url,
+                caption=text,
+                reply_markup=buttons,
+                parse_mode=enums.ParseMode.HTML
+            )
+            return sent_msg
+        
+        logger.warning(f"No poster available to send for {base_name}")
+        return None
 
     except Exception as e:
         logger.error(f"Failed to post update: {e}")
     return None
 
-# ============ GENERATE MESSAGE ============
-
+# ================================================================
+# 📝 GENERATE MESSAGE (WITH # BEFORE LANGUAGE)
+# ================================================================
 def generate_movie_message(movie_doc, base_name) -> str:
-    lang = movie_doc.get("language", "Hindi")
+    lang = movie_doc.get("language", "Unknown")
     tag = movie_doc.get("tag", "#MOVIE")
     year = movie_doc.get("year")
     year_str = f" ({year})" if year else ""
@@ -424,7 +554,23 @@ def generate_movie_message(movie_doc, base_name) -> str:
     caption = f"🎬 <code>{base_name}{year_str}</code>\n"
     caption += f"📌 (Touch To Copy)\n\n"
     caption += f"⭐ IMDb: {movie_doc.get('rating', 'N/A')}\n\n"
-    # 🔽 Modified line: added '#' before lang
+    # ✅ ਭਾਸ਼ਾ ਦੇ ਅੱਗੇ # ਲੱਗ ਰਿਹਾ ਹੈ
     caption += f"➡ Audio Track:- 🔊 #{lang}\n\n"
     caption += f"Added ✅"
     return caption
+
+# ================================================================
+# 🖼️ LANDSCAPE POSTER HELPER (FOR TMDB BACKDROP)
+# ================================================================
+async def get_landscape_poster_only(movie_name: str, is_series: bool = False) -> Optional[str]:
+    if LANDSCAPE_POSTER:
+        try:
+            details = await get_movie_detailsx(movie_name)
+            if details and details.get('backdrop_url'):
+                backdrop = details['backdrop_url']
+                if "t/p/" in backdrop:
+                    backdrop = re.sub(r'/t/p/w\d+/', '/t/p/original/', backdrop)
+                return backdrop
+        except Exception as e:
+            logger.error(f"TMDB backdrop error: {e}")
+    return None
