@@ -418,10 +418,12 @@ async def send_movie_update(bot, base_name, is_update=False):
 def generate_movie_message(movie_doc, base_name) -> str:
     lang = movie_doc.get("language", "Hindi")
     tag = movie_doc.get("tag", "#MOVIE")
+    year = movie_doc.get("year")
+    year_str = f" ({year})" if year else ""
     
-    caption = f"🎬 <code>{title}{year_str}</code>\n"
-    caption += f"<i>📌 (Touch To Copy)</i>\n\n"
-    caption += f"⭐ <b>Rating:</b> {movie_doc.get('rating', 'N/A')}\n"
-    caption += f"➡ Audio Track:- 🔊 {language_str}\n\n"
+    caption = f"🎬 <code>{base_name}{year_str}</code>\n"
+    caption += f"📌 (Touch To Copy)\n\n"
+    caption += f"⭐ IMDb: {movie_doc.get('rating', 'N/A')}\n\n"
+    caption += f"➡ Audio Track:- 🔊 {lang}\n\n"
     caption += f"Added ✅"
     return caption
