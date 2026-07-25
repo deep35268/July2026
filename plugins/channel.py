@@ -242,21 +242,26 @@ def extract_languages_from_text(text: str) -> set:
             found.add(lang_name)
     return found
 
+# ============================
+# ✅ FIXED: Language only from filename, NOT from caption
+# ============================
 def extract_media_info(filename: str, caption: str):
     filename_cleaned = clean_mentions_links(filename)
     filename_normalized = normalize(filename_cleaned)
-    caption_clean = clean_mentions_links(caption).lower() if caption else ""
+    # caption_clean is NOT used for language extraction anymore
+    # caption_clean = clean_mentions_links(caption).lower() if caption else ""
 
     tag = "#MOVIE"
     year = None
     
     quality = QUALITY_PATTERN.findall(filename_normalized)
     quality_str = ", ".join(quality) if quality else "N/A"
-    ott_platform = extract_ott_platform(f"{filename_normalized} {caption_clean}")
+    ott_platform = extract_ott_platform(filename_normalized)  # caption removed
 
     lang_set = set()
     lang_set.update(extract_languages_from_text(filename_normalized))
-    lang_set.update(extract_languages_from_text(caption_clean))
+    # ❌ removed caption language extraction
+    # lang_set.update(extract_languages_from_text(caption_clean))
     language = ", ".join(sorted(lang_set)) if lang_set else "N/A"
 
     if EPISODE_CLEAN_PATTERN.search(filename_normalized):
@@ -277,7 +282,6 @@ def extract_media_info(filename: str, caption: str):
     if not base_name:
         base_name = filename_normalized
 
-    # [FIX] For series, remove season number to group all episodes together
     if tag == "#SERIES":
         base_name = re.sub(r'\bS\d{1,2}\b', '', base_name, flags=re.IGNORECASE).strip()
         base_name = normalize(base_name)
@@ -486,7 +490,7 @@ async def send_movie_update(bot, base_name, is_update=False):
             return None
 
         text = generate_movie_message(movie_doc, base_name)
-        buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='♻️ 𝐉𝐎𝐈𝐍 𝐑𝐄𝐐𝐔𝐄𝐒𝐓 𝐆𝐑𝐎𝐔𝐏 ♻️', url="https://t.me/+l-EIo3NnnJAxODE9")]])
+        buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='🔥 𝐉𝐎𝐈𝐍 𝐑𝐄𝐐𝐔𝐄𝐒𝐓 𝐆𝐑𝐎𝐔𝐏 ⚡', url="https://t.me/+l-EIo3NnnJAxODE9")]])
         poster_url = movie_doc.get("poster_url")
 
         if not poster_url:
@@ -640,8 +644,9 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, 
         logger.error(f"Critical error in AI Double-Check Engine: {e}")
 
 # ==================================================
-# 🟢 GENERATE MOVIE MESSAGE - UPDATED FINAL VERSION
+# 🟢 GENERATE MOVIE MESSAGE - FINAL VERSION
 # ✅ English Caption | ❌ Removed "/10" from Rating
+# ✅ Audio Track shows only filename languages
 # ==================================================
 
 def generate_movie_message(movie_doc, base_name) -> str:
@@ -670,15 +675,12 @@ def generate_movie_message(movie_doc, base_name) -> str:
         year_str = f" ({html.escape(year_val)})" if year_val and year_val != "None" and year_val not in title else ""
     
     rating_raw = movie_doc.get("rating", "N/A")
-    
-    # ✅ FIXED: "/10" removed, shows only number (e.g., 9.0, 8.5)
     rating_str = rating_raw if rating_raw != "N/A" else "N/A"
     
-    # ✅ FIXED: English caption (no Punjabi)
     return (
         f"🎬 <code>{title}{year_str}</code>\n"
         f"<i>📌 (Touch to Copy)</i>\n\n"
         f"⭐ IMDb: {rating_str}\n\n"
         f"➡ Audio Track: 🔊 {language_str}\n\n"
         f"✅ Added"
-    )
+)
