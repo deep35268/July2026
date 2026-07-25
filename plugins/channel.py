@@ -424,6 +424,7 @@ def generate_movie_message(movie_doc, base_name) -> str:
     caption = f"🎬 <code>{base_name}{year_str}</code>\n"
     caption += f"📌 (Touch To Copy)\n\n"
     caption += f"⭐ IMDb: {movie_doc.get('rating', 'N/A')}\n\n"
-    caption += f"➡ Audio Track:- 🔊 {lang}\n\n"
+    # 🔽 Modified line: added '#' before lang
+    caption += f"➡ Audio Track:- 🔊 #{lang}\n\n"
     caption += f"Added ✅"
     return caption
