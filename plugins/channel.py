@@ -396,7 +396,7 @@ async def send_movie_update(bot, base_name, is_update=False):
             return None
 
         text = generate_movie_message(movie_doc, base_name)
-        buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='🔥 JOIN CHANNEL 🔥', url="https://t.me/+l-EIo3NnnJAxODE9")]])
+        buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='♻️ 𝐉𝐎𝐈𝐍 𝐑𝐄𝐐𝐔𝐄𝐒𝐓 𝐆𝐑𝐎𝐔𝐏 ♻️', url="https://t.me/+l-EIo3NnnJAxODE9")]])
         poster_url = movie_doc.get("poster_url")
 
         # Direct Poster URL Posting (No Image Editing/Text Overlay)
@@ -419,8 +419,9 @@ def generate_movie_message(movie_doc, base_name) -> str:
     lang = movie_doc.get("language", "Hindi")
     tag = movie_doc.get("tag", "#MOVIE")
     
-    caption = f"🎬 <b>{base_name}</b>\n\n"
-    caption += f"🏷 <b>Type:</b> {tag}\n"
-    caption += f"🌐 <b>Language:</b> #{lang}\n"
+    caption = f"🎬 <code>{title}{year_str}</code>\n"
+    caption += f"<i>📌 (Touch To Copy)</i>\n\n"
     caption += f"⭐ <b>Rating:</b> {movie_doc.get('rating', 'N/A')}\n"
+    caption += f"➡ Audio Track:- 🔊 {language_str}\n\n"
+    caption += f"Added ✅"
     return caption
