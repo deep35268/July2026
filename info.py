@@ -91,6 +91,10 @@ DREAMXBOTZ_IMAGE_FETCH = bool(environ.get('DREAMXBOTZ_IMAGE_FETCH', True))  # On
 LINK_PREVIEW = bool(environ.get('LINK_PREVIEW', False)) # Shows link preview in notification msg instead of image
 ABOVE_PREVIEW = bool(environ.get('ABOVE_PREVIEW', True)) # Shows link preview above the text in notification msg if True else below the msg
 TMDB_API_KEY = environ.get('TMDB_API_KEY', '665627e6a5ee583d709f90c1af1de7e7') # preffer to use your own tmdb API Key get it from https://www.themoviedb.org/settings/api
+# ============================
+# Gemini AI Configuration (Added for Language Detection)
+# ============================
+GEMINI_API_KEY = environ.get('GEMINI_API_KEY', 'AIzaSyCUuLfxuwA19ILtBjuWTZFUlPe1y7tA0JA')  # Gemini API key for AI language detection
 TMDB_POSTER = bool(environ.get('TMDB_POSTER', True)) # Shows TMDB poster in notification msg
 LANDSCAPE_POSTER = bool(environ.get('LANDSCAPE_POSTER', True)) # Shows landscape poster in notification msg
 
