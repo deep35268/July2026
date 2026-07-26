@@ -149,7 +149,7 @@ async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[by
         logger.error(f"Title-only poster generation failed: {e}")
         return None
 
-# ============ AI & OFFICIAL LANDSCAPE POSTER FETCH ============
+# ============ AI & OFFICIAL LANDSCAPE POSTER FETCH (TMDB FIRST) ============
 
 async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optional[str]:
     try:
@@ -171,18 +171,23 @@ async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optio
     return None
 
 async def get_landscape_poster_only(movie_name: str, is_series: bool = False) -> Optional[str]:
-    if LANDSCAPE_POSTER:
-        try:
-            details = await get_movie_detailsx(movie_name)
-            if details and details.get('backdrop_url'):
-                backdrop = details['backdrop_url']
-                if "t/p/" in backdrop:
-                    backdrop = re.sub(r'/t/p/w\d+/', '/t/p/original/', backdrop)
-                    backdrop = re.sub(r'/t/p/w\d+x\d+/', '/t/p/original/', backdrop)
-                return backdrop
-        except Exception as e:
-            logger.error(f"TMDB backdrop error: {e}")
-    
+    """
+    Try to fetch landscape poster from TMDB first, then fallback to Cinemeta.
+    Always attempts TMDB regardless of LANDSCAPE_POSTER flag.
+    """
+    # 1. Try TMDB first
+    try:
+        details = await get_movie_detailsx(movie_name)
+        if details and details.get('backdrop_url'):
+            backdrop = details['backdrop_url']
+            if "t/p/" in backdrop:
+                backdrop = re.sub(r'/t/p/w\d+/', '/t/p/original/', backdrop)
+                backdrop = re.sub(r'/t/p/w\d+x\d+/', '/t/p/original/', backdrop)
+            return backdrop
+    except Exception as e:
+        logger.error(f"TMDB backdrop error: {e}")
+
+    # 2. Fallback to Cinemeta AI
     ai_backdrop = await fetch_cinemeta_ai_poster(movie_name, is_series)
     if ai_backdrop:
         return ai_backdrop
@@ -386,7 +391,7 @@ async def _process_with_lock(bot, filename, caption, media_info, display_name):
             except Exception as e:
                 logger.error(f"Error fetching series year from Cinemeta: {e}")
 
-        # --- FETCH POSTER ---
+        # --- FETCH POSTER (TMDB first) ---
         final_poster = await get_landscape_poster_only(display_name, is_series)
 
         # --- LANGUAGE OVERRIDE ---
@@ -721,7 +726,7 @@ def generate_movie_message(movie_doc, display_name) -> str:
     )
 
 # ==================================================
-# 🟢 ADMIN COMMAND: /setposter (Create post without file)
+# 🟢 ADMIN COMMAND: /setposter (TMDB First, Manual Fallback)
 # ==================================================
 
 @Client.on_message(filters.command("setposter") & filters.user(ADMINS))
@@ -734,56 +739,81 @@ async def set_poster_cmd(bot: Client, message: Message):
                 "❌ **ਗਲਤ ਫਾਰਮੈਟ!**\n\n"
                 "✅ **ਸਹੀ ਤਰੀਕਾ:**\n"
                 "1. ਕਿਸੇ ਫਾਈਲ 'ਤੇ reply ਕਰੋ: `/setposter https://example.com/poster.jpg`\n"
-                "2. ਜਾਂ ਇਸ ਤਰ੍ਹਾਂ: `/setposter ਮੂਵੀ ਦਾ ਨਾਮ | https://example.com/poster.jpg`"
+                "2. ਜਾਂ ਇਸ ਤਰ੍ਹਾਂ: `/setposter ਮੂਵੀ ਦਾ ਨਾਮ | https://example.com/poster.jpg`\n"
+                "3. ਸਿਰਫ਼ ਮੂਵੀ ਨਾਮ (TMDB ਆਪੇ ਫੇਚ ਕਰੇਗਾ): `/setposter ਮੂਵੀ ਦਾ ਨਾਮ`"
             )
             return
         
-        poster_url = text.strip()
-        movie_name = None
-        
-        # --- 2. Check if user used format: "Movie Name | URL" ---
-        if "|" in poster_url:
-            parts = poster_url.split("|", 1)
+        parts = text.split("|")
+        if len(parts) == 2:
             movie_name = parts[0].strip()
-            poster_url = parts[1].strip()
+            provided_url = parts[1].strip()
+        elif len(parts) == 1:
+            # Check if it's a URL or a movie name
+            if parts[0].strip().startswith(("http://", "https://")):
+                # Only URL given: we need to get movie name from reply or fallback
+                provided_url = parts[0].strip()
+                movie_name = None
+                if message.reply_to_message:
+                    reply_msg = message.reply_to_message
+                    for attr in ("document", "video", "audio"):
+                        media = getattr(reply_msg, attr, None)
+                        if media and hasattr(media, "file_name"):
+                            movie_name = media.file_name
+                            break
+                    if not movie_name and reply_msg.caption:
+                        movie_name = reply_msg.caption
+                if not movie_name:
+                    await message.reply(
+                        "❌ **ਮੂਵੀ ਦਾ ਨਾਮ ਨਹੀਂ ਮਿਲਿਆ।**\n\n"
+                        "👉 ਕਿਰਪਾ ਕਰਕੇ:\n"
+                        "1. ਕਿਸੇ ਫਾਈਲ 'ਤੇ reply ਕਰਕੇ `/setposter <URL>` ਭੇਜੋ, ਜਾਂ\n"
+                        "2. ਇਸ ਫਾਰਮੈਟ ਵਰਤੋ: `/setposter ਮੂਵੀ ਦਾ ਨਾਮ | URL`\n"
+                        "3. ਜਾਂ ਸਿਰਫ਼ ਮੂਵੀ ਨਾਮ ਦਿਓ: `/setposter ਮੂਵੀ ਦਾ ਨਾਮ` (TMDB ਪੋਸਟਰ ਆਪੇ ਫੇਚ ਕਰੇਗਾ)"
+                    )
+                    return
+            else:
+                # Only movie name given (no URL)
+                movie_name = parts[0].strip()
+                provided_url = None
         else:
-            # --- 3. If no pipe, try to get movie name from replied file ---
-            if message.reply_to_message:
-                reply_msg = message.reply_to_message
-                for attr in ("document", "video", "audio"):
-                    media = getattr(reply_msg, attr, None)
-                    if media and hasattr(media, "file_name"):
-                        movie_name = media.file_name
-                        break
-                if not movie_name and reply_msg.caption:
-                    movie_name = reply_msg.caption
-        
-        # --- 4. If still no movie name, error ---
-        if not movie_name:
-            await message.reply(
-                "❌ **ਮੂਵੀ ਦਾ ਨਾਮ ਨਹੀਂ ਮਿਲਿਆ।**\n\n"
-                "👉 ਕਿਰਪਾ ਕਰਕੇ:\n"
-                "1. ਕਿਸੇ ਫਾਈਲ 'ਤੇ reply ਕਰਕੇ `/setposter <URL>` ਭੇਜੋ, ਜਾਂ\n"
-                "2. ਇਸ ਫਾਰਮੈਟ ਵਰਤੋ: `/setposter ਮੂਵੀ ਦਾ ਨਾਮ | URL`"
-            )
+            await message.reply("❌ ਗਲਤ ਫਾਰਮੈਟ।")
             return
-        
-        # --- 5. Validate URL ---
-        if not poster_url.startswith(("http://", "https://")):
+
+        # --- 2. Validate URL if provided ---
+        if provided_url and not provided_url.startswith(("http://", "https://")):
             await message.reply("❌ URL `http://` ਜਾਂ `https://` ਨਾਲ ਸ਼ੁਰੂ ਹੋਣਾ ਚਾਹੀਦਾ ਹੈ।")
             return
-        
-        # --- 6. Extract movie info from filename (year, language, etc.) ---
+
+        # --- 3. Extract movie info from filename ---
         media_info = extract_media_info(movie_name, "")
         display_name = media_info["base_name"]
         movie_id = media_info["base_name_key"]
-        
-        # --- 7. Try to fetch TMDB metadata (rating, year, language) ---
+        is_series = (media_info["tag"] == "#SERIES")
+
+        # --- 4. Try TMDB landscape poster first ---
+        final_poster = await get_landscape_poster_only(display_name, is_series)
+
+        # --- 5. If TMDB fails and user provided URL, use that ---
+        if not final_poster:
+            if provided_url:
+                final_poster = provided_url
+                logger.info(f"TMDB poster not found, using provided URL for {display_name}")
+            else:
+                await message.reply(
+                    f"❌ **'{display_name}'** ਲਈ TMDB landscape ਪੋਸਟਰ ਨਹੀਂ ਮਿਲਿਆ ਅਤੇ ਤੁਸੀਂ ਕੋਈ URL ਵੀ ਨਹੀਂ ਦਿੱਤਾ।\n\n"
+                    "👉 ਕਿਰਪਾ ਕਰਕੇ:\n"
+                    "1. URL ਪ੍ਰਦਾਨ ਕਰੋ: `/setposter ਮੂਵੀ ਦਾ ਨਾਮ | URL`\n"
+                    "2. ਜਾਂ ਕਿਸੇ ਫਾਈਲ 'ਤੇ reply ਕਰੋ: `/setposter URL`"
+                )
+                return
+
+        # --- 6. Fetch TMDB metadata (rating, year, language) ---
         tmdb_rating = "N/A"
         tmdb_year = media_info.get("year")
         tmdb_language = media_info.get("language", "Hindi")
         tmdb_tag = media_info.get("tag", "#MOVIE")
-        
+
         try:
             details = await get_movie_detailsx(display_name)
             if details and not details.get("error"):
@@ -798,16 +828,16 @@ async def set_poster_cmd(bot: Client, message: Message):
                 if orig_lang:
                     tmdb_language = TMDB_LANG_MAP.get(orig_lang.lower(), tmdb_language)
         except Exception as e:
-            logger.warning(f"TMDB fetch failed for {display_name}: {e}")
-        
-        # --- 8. Check if movie already exists in movie_updates ---
+            logger.warning(f"TMDB metadata fetch failed for {display_name}: {e}")
+
+        # --- 7. Check if movie already exists in movie_updates ---
         movie_doc = await db.movie_updates.find_one({"_id": movie_id})
-        
+
         if movie_doc:
             # --- Update existing movie with new poster ---
             await db.movie_updates.update_one(
                 {"_id": movie_id},
-                {"$set": {"poster_url": poster_url}}
+                {"$set": {"poster_url": final_poster}}
             )
             await message.reply(f"✅ **'{display_name}'** ਲਈ ਪੋਸਟਰ ਅੱਪਡੇਟ ਕਰ ਦਿੱਤਾ ਗਿਆ ਹੈ।")
         else:
@@ -816,7 +846,7 @@ async def set_poster_cmd(bot: Client, message: Message):
                 "_id": movie_id,
                 "display_title": display_name,
                 "files": [],  # Empty files array
-                "poster_url": poster_url,
+                "poster_url": final_poster,
                 "rating": tmdb_rating,
                 "year": tmdb_year,
                 "tag": tmdb_tag,
@@ -833,8 +863,8 @@ async def set_poster_cmd(bot: Client, message: Message):
                 if not movie_doc:
                     await message.reply("❌ ਐਂਟਰੀ ਬਣਾਉਣ ਵਿੱਚ ਗਲਤੀ ਆਈ।")
                     return
-        
-        # --- 9. Send/update the post ---
+
+        # --- 8. Send/update the post ---
         if movie_doc.get("message_id"):
             await send_movie_update(bot, movie_id, is_update=True)
         else:
