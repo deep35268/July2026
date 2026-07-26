@@ -721,7 +721,7 @@ def generate_movie_message(movie_doc, display_name) -> str:
     )
 
 # ==================================================
-# 🟢 ADMIN COMMAND: /setposter (Auto-Detect Movie Name)
+# 🟢 ADMIN COMMAND: /setposter (Auto-Detect Movie Name from Reply or Pipe)
 # ==================================================
 
 @Client.on_message(filters.command("setposter") & filters.user(ADMINS))
@@ -734,23 +734,20 @@ async def set_poster_cmd(bot: Client, message: Message):
                 "❌ **ਗਲਤ ਫਾਰਮੈਟ!**\n\n"
                 "✅ **ਸਹੀ ਤਰੀਕਾ:**\n"
                 "1. ਕਿਸੇ ਫਾਈਲ 'ਤੇ reply ਕਰੋ: `/setposter https://example.com/poster.jpg`\n"
-                "2. ਜਾਂ ਸਿੱਧਾ ਭੇਜੋ: `/setposter https://example.com/poster.jpg` (ਆਖਰੀ ਫਾਈਲ auto-detect ਹੋਵੇਗੀ)\n"
-                "3. ਜਾਂ ਇਸ ਤਰ੍ਹਾਂ: `/setposter ਮੂਵੀ ਦਾ ਨਾਮ | https://example.com/poster.jpg`"
+                "2. ਜਾਂ ਇਸ ਤਰ੍ਹਾਂ: `/setposter ਮੂਵੀ ਦਾ ਨਾਮ | https://example.com/poster.jpg`"
             )
             return
         
         poster_url = text.strip()
+        movie_name = None
         
-        # Check if user used format: "Movie Name | URL"
+        # --- 2. Check if user used format: "Movie Name | URL" ---
         if "|" in poster_url:
-            movie_name, poster_url = poster_url.split("|", 1)
-            movie_name = movie_name.strip()
-            poster_url = poster_url.strip()
+            parts = poster_url.split("|", 1)
+            movie_name = parts[0].strip()
+            poster_url = parts[1].strip()
         else:
-            # --- Auto-detect movie name from reply or last file ---
-            movie_name = None
-            
-            # Method 1: If command is a reply to a file message
+            # --- 3. If no pipe, try to get movie name from replied file ---
             if message.reply_to_message:
                 reply_msg = message.reply_to_message
                 for attr in ("document", "video", "audio"):
@@ -760,41 +757,32 @@ async def set_poster_cmd(bot: Client, message: Message):
                         break
                 if not movie_name and reply_msg.caption:
                     movie_name = reply_msg.caption
-            
-            # Method 2: If no reply, try to get the last file from the chat
-            if not movie_name:
-                async for msg in bot.get_chat_history(message.chat.id, limit=20):
-                    for attr in ("document", "video", "audio"):
-                        media = getattr(msg, attr, None)
-                        if media and hasattr(media, "file_name"):
-                            movie_name = media.file_name
-                            break
-                    if movie_name:
-                        break
         
+        # --- 4. If still no movie name, error ---
         if not movie_name:
             await message.reply(
-                "❌ **ਮੂਵੀ ਦਾ ਨਾਮ auto-detect ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਿਆ।**\n\n"
+                "❌ **ਮੂਵੀ ਦਾ ਨਾਮ ਨਹੀਂ ਮਿਲਿਆ।**\n\n"
                 "👉 ਕਿਰਪਾ ਕਰਕੇ:\n"
-                "1. ਕਿਸੇ ਫਾਈਲ 'ਤੇ reply ਕਰੋ ਅਤੇ `/setposter <URL>` ਭੇਜੋ, ਜਾਂ\n"
+                "1. ਕਿਸੇ ਫਾਈਲ 'ਤੇ reply ਕਰਕੇ `/setposter <URL>` ਭੇਜੋ, ਜਾਂ\n"
                 "2. ਇਸ ਫਾਰਮੈਟ ਵਰਤੋ: `/setposter ਮੂਵੀ ਦਾ ਨਾਮ | URL`"
             )
             return
         
+        # --- 5. Validate URL ---
         if not poster_url.startswith(("http://", "https://")):
             await message.reply("❌ URL `http://` ਜਾਂ `https://` ਨਾਲ ਸ਼ੁਰੂ ਹੋਣਾ ਚਾਹੀਦਾ ਹੈ।")
             return
         
-        # --- 2. Extract movie info from filename ---
+        # --- 6. Extract movie info from filename ---
         media_info = extract_media_info(movie_name, "")
         display_name = media_info["base_name"]
         movie_id = media_info["base_name_key"]
         
-        # --- 3. Check if movie exists in movie_updates ---
+        # --- 7. Check if movie exists in movie_updates ---
         movie_doc = await db.movie_updates.find_one({"_id": movie_id})
         
         if not movie_doc:
-            # --- 4. Search in main files collection (ia_filterdb) ---
+            # --- 8. Search in main files collection (ia_filterdb) ---
             files_collection = db.ia_filterdb
             
             file_list = await files_collection.find({
@@ -808,7 +796,7 @@ async def set_poster_cmd(bot: Client, message: Message):
                 )
                 return
             
-            # --- 5. Create new movie_updates entry ---
+            # --- 9. Create new movie_updates entry ---
             new_doc = {
                 "_id": movie_id,
                 "display_title": display_name,
@@ -839,14 +827,14 @@ async def set_poster_cmd(bot: Client, message: Message):
                     await message.reply("❌ ਐਂਟਰੀ ਬਣਾਉਣ ਵਿੱਚ ਗਲਤੀ ਆਈ।")
                     return
         else:
-            # --- 6. Update existing movie with new poster ---
+            # --- 10. Update existing movie with new poster ---
             await db.movie_updates.update_one(
                 {"_id": movie_id},
                 {"$set": {"poster_url": poster_url}}
             )
             await message.reply(f"✅ **'{display_name}'** ਲਈ ਪੋਸਟਰ ਅੱਪਡੇਟ ਕਰ ਦਿੱਤਾ ਗਿਆ ਹੈ।")
         
-        # --- 7. Send/update the post ---
+        # --- 11. Send/update the post ---
         if movie_doc.get("message_id"):
             await send_movie_update(bot, movie_id, is_update=True)
         else:
