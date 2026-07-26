@@ -12,7 +12,7 @@ from typing import Optional
 from PIL import Image, ImageDraw, ImageFont
 
 from pyrogram import Client, filters, enums
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, Message  # <-- ਇੱਥੇ Message ਜੋੜਿਆ
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, Message
 from pyrogram.errors import MessageIdInvalid, MessageNotModified, FloodWait
 from pymongo.errors import DuplicateKeyError
 
@@ -199,7 +199,6 @@ def normalize(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 def remove_ignored_words(text: str) -> str:
-    # Improved: Remove ALL ignored words instead of breaking at first.
     words = text.split()
     cleaned = []
     IGNORE_LOWER = {w.lower() for w in IGNORE_WORDS}
@@ -216,8 +215,8 @@ def extract_languages_from_text(text: str) -> set:
             found.add(lang_name)
     return found
 
-def extract_media_info(filename: str, caption: str):
-    """Extract base name, year, language, quality, etc. from filename only."""
+def extract_media_info(filename: str, caption: str = ""):
+    """Extract base name, year, language, quality, etc. from filename."""
     filename_cleaned = clean_mentions_links(filename)
     filename_normalized = normalize(filename_cleaned)
 
@@ -256,8 +255,8 @@ def extract_media_info(filename: str, caption: str):
 
     return {
         "processed": filename_normalized,
-        "base_name": base_name.title(),  # Display purpose
-        "base_name_key": base_name.lower(),  # DB Key purpose
+        "base_name": base_name.title(),
+        "base_name_key": base_name.lower(),
         "tag": tag,
         "year": year,
         "quality": quality_str,
@@ -295,7 +294,7 @@ async def process_and_send_update(bot, filename, caption):
     try:
         media_info = extract_media_info(filename, caption)
         display_name = media_info["base_name"]
-        movie_key = media_info["base_name_key"]  # Lowercase for locking/caching
+        movie_key = media_info["base_name_key"]
         
         if len(POSTED_MOVIES) > MAX_CACHE_SIZE:
             POSTED_MOVIES.clear()
@@ -303,7 +302,7 @@ async def process_and_send_update(bot, filename, caption):
         if movie_key in POSTED_MOVIES:
             return
 
-        async with locks[movie_key]:  # Lock uses lowercase key
+        async with locks[movie_key]:
             if movie_key in POSTED_MOVIES:
                 return
             POSTED_MOVIES.add(movie_key)
@@ -329,7 +328,7 @@ async def _process_with_lock(bot, filename, caption, media_info, display_name):
         "timestamp": datetime.now()
     }
 
-    movie_id = media_info["base_name_key"]  # Lowercase ID
+    movie_id = media_info["base_name_key"]
 
     try:
         details = {}
@@ -410,7 +409,6 @@ async def _process_with_lock(bot, filename, caption, media_info, display_name):
         # --- IF POSTER IS MISSING ---
         if not final_poster:
             logger.warning(f"❌ Poster NOT found for '{display_name}'. Saving file in DB, waiting for Admin to set poster via /setposter.")
-            # Save file to DB regardless, but do NOT send channel post yet.
             if existing_movie:
                 await db.movie_updates.update_one(
                     {"_id": movie_id},
@@ -433,11 +431,9 @@ async def _process_with_lock(bot, filename, caption, media_info, display_name):
                     await db.movie_updates.insert_one(movie_doc)
                 except DuplicateKeyError:
                     await db.movie_updates.update_one({"_id": movie_id}, {"$push": {"files": file_data}})
-            return  # Exit without sending post
+            return
 
         # --- POSTER IS AVAILABLE. PROCEED TO POST/UPDATE ---
-        
-        # Build update fields
         update_fields = {}
         if existing_movie:
             if existing_movie.get("rating") == "N/A" and rating_val != "N/A":
@@ -451,7 +447,7 @@ async def _process_with_lock(bot, filename, caption, media_info, display_name):
             if existing_movie.get("display_title") != display_name:
                 update_fields["display_title"] = display_name
 
-        # Case 1: Movie exists, check if post exists
+        # Case 1: Movie exists
         if existing_movie:
             post_exists = False
             if existing_movie.get("message_id"):
@@ -470,7 +466,6 @@ async def _process_with_lock(bot, filename, caption, media_info, display_name):
             file_exists = any(f.get("filename") == filename for f in existing_movie.get("files", []))
 
             if post_exists:
-                # Update existing post if needed
                 if not file_exists:
                     await db.movie_updates.update_one(
                         {"_id": movie_id}, 
@@ -482,7 +477,6 @@ async def _process_with_lock(bot, filename, caption, media_info, display_name):
                     await send_movie_update(bot, movie_id, is_update=True)
                 return
             else:
-                # Post is missing, repost it
                 if not file_exists:
                     await db.movie_updates.update_one(
                         {"_id": movie_id},
@@ -516,7 +510,6 @@ async def _process_with_lock(bot, filename, caption, media_info, display_name):
             if msg:
                 await db.movie_updates.update_one({"_id": movie_id}, {"$set": {"message_id": msg.id}})
         except DuplicateKeyError:
-            # Race condition
             await db.movie_updates.update_one({"_id": movie_id}, {"$push": {"files": file_data}, "$set": {"message_id": None}})
             msg = await send_movie_update(bot, movie_id, is_update=False)
             if msg:
@@ -535,7 +528,6 @@ async def send_movie_update(bot, movie_id, is_update=False):
 
         display_name = movie_doc.get("display_title", movie_id.title())
         
-        # Check if poster exists
         poster_url = movie_doc.get("poster_url")
         if not poster_url:
             logger.warning(f"⚠️ No poster_url set for {display_name}. Cannot send/update.")
@@ -564,7 +556,6 @@ async def send_movie_update(bot, movie_id, is_update=False):
                     await asyncio.sleep(e.value)
                     return await send_movie_update(bot, movie_id, is_update)
                 except MessageIdInvalid:
-                    # Message deleted, treat as new post
                     logger.warning(f"Message ID invalid for {display_name}. Sending new.")
                     await db.movie_updates.update_one({"_id": movie_id}, {"$set": {"message_id": None}})
                     return await send_movie_update(bot, movie_id, is_update=False)
@@ -581,7 +572,6 @@ async def send_movie_update(bot, movie_id, is_update=False):
                     except Exception:
                         pass
             else:
-                # Fallback: edit caption only (if image fails)
                 try:
                     sent_msg = await bot.edit_message_caption(
                         chat_id=MOVIE_UPDATE_CHANNEL,
@@ -616,7 +606,6 @@ async def send_movie_update(bot, movie_id, is_update=False):
                     parse_mode=enums.ParseMode.HTML
                 )
             else:
-                # In case title poster fails, try sending raw URL (but ensure it's valid)
                 sent_msg = await bot.send_photo(
                     chat_id=MOVIE_UPDATE_CHANNEL,
                     photo=poster_url,
@@ -629,7 +618,6 @@ async def send_movie_update(bot, movie_id, is_update=False):
             return await send_movie_update(bot, movie_id, is_update)
         except Exception as e:
             logger.error(f"New send failed: {e}")
-            # Last resort: send without photo (text only) - but better to fail gracefully.
             try:
                 sent_msg = await bot.send_message(
                     chat_id=MOVIE_UPDATE_CHANNEL,
@@ -733,61 +721,141 @@ def generate_movie_message(movie_doc, display_name) -> str:
     )
 
 # ==================================================
-# 🟢 ADMIN COMMAND: /setposter (Manual Override)
+# 🟢 ADMIN COMMAND: /setposter (Auto-Detect Movie Name)
 # ==================================================
 
 @Client.on_message(filters.command("setposter") & filters.user(ADMINS))
 async def set_poster_cmd(bot: Client, message: Message):
     try:
+        # --- 1. Extract poster URL from command ---
         text = message.text.split("/setposter", 1)[-1].strip()
-        if "|" not in text:
+        if not text:
             await message.reply(
                 "❌ **ਗਲਤ ਫਾਰਮੈਟ!**\n\n"
                 "✅ **ਸਹੀ ਤਰੀਕਾ:**\n"
-                "`/setposter ਮੂਵੀ ਦਾ ਨਾਮ | ਪੋਸਟਰ URL`\n\n"
-                "**ਉਦਾਹਰਨ:**\n"
-                "`/setposter Sathayavaan Sothanai | https://example.com/poster.jpg`"
+                "1. ਕਿਸੇ ਫਾਈਲ 'ਤੇ reply ਕਰੋ: `/setposter https://example.com/poster.jpg`\n"
+                "2. ਜਾਂ ਸਿੱਧਾ ਭੇਜੋ: `/setposter https://example.com/poster.jpg` (ਆਖਰੀ ਫਾਈਲ auto-detect ਹੋਵੇਗੀ)\n"
+                "3. ਜਾਂ ਇਸ ਤਰ੍ਹਾਂ: `/setposter ਮੂਵੀ ਦਾ ਨਾਮ | https://example.com/poster.jpg`"
             )
             return
         
-        movie_name, poster_url = text.split("|", 1)
-        movie_name = movie_name.strip()
-        poster_url = poster_url.strip()
+        poster_url = text.strip()
+        
+        # Check if user used format: "Movie Name | URL"
+        if "|" in poster_url:
+            movie_name, poster_url = poster_url.split("|", 1)
+            movie_name = movie_name.strip()
+            poster_url = poster_url.strip()
+        else:
+            # --- Auto-detect movie name from reply or last file ---
+            movie_name = None
+            
+            # Method 1: If command is a reply to a file message
+            if message.reply_to_message:
+                reply_msg = message.reply_to_message
+                for attr in ("document", "video", "audio"):
+                    media = getattr(reply_msg, attr, None)
+                    if media and hasattr(media, "file_name"):
+                        movie_name = media.file_name
+                        break
+                if not movie_name and reply_msg.caption:
+                    movie_name = reply_msg.caption
+            
+            # Method 2: If no reply, try to get the last file from the chat
+            if not movie_name:
+                async for msg in bot.get_chat_history(message.chat.id, limit=20):
+                    for attr in ("document", "video", "audio"):
+                        media = getattr(msg, attr, None)
+                        if media and hasattr(media, "file_name"):
+                            movie_name = media.file_name
+                            break
+                    if movie_name:
+                        break
+        
+        if not movie_name:
+            await message.reply(
+                "❌ **ਮੂਵੀ ਦਾ ਨਾਮ auto-detect ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਿਆ।**\n\n"
+                "👉 ਕਿਰਪਾ ਕਰਕੇ:\n"
+                "1. ਕਿਸੇ ਫਾਈਲ 'ਤੇ reply ਕਰੋ ਅਤੇ `/setposter <URL>` ਭੇਜੋ, ਜਾਂ\n"
+                "2. ਇਸ ਫਾਰਮੈਟ ਵਰਤੋ: `/setposter ਮੂਵੀ ਦਾ ਨਾਮ | URL`"
+            )
+            return
         
         if not poster_url.startswith(("http://", "https://")):
             await message.reply("❌ URL `http://` ਜਾਂ `https://` ਨਾਲ ਸ਼ੁਰੂ ਹੋਣਾ ਚਾਹੀਦਾ ਹੈ।")
             return
         
-        movie_id = movie_name.lower()
+        # --- 2. Extract movie info from filename ---
+        media_info = extract_media_info(movie_name, "")
+        display_name = media_info["base_name"]
+        movie_id = media_info["base_name_key"]
+        
+        # --- 3. Check if movie exists in movie_updates ---
         movie_doc = await db.movie_updates.find_one({"_id": movie_id})
         
         if not movie_doc:
-            await message.reply(
-                f"❌ ਮੂਵੀ **'{movie_name}'** database ਵਿੱਚ ਨਹੀਂ ਮਿਲੀ।\n\n"
-                "👉 ਕਿਰਪਾ ਕਰਕੇ ਪਹਿਲਾਂ ਇਸ ਮੂਵੀ ਦੀ ਕੋਈ ਫਾਈਲ ਚੈਨਲ 'ਤੇ ਆਉਣ ਦਿਓ, ਫਿਰ ਇਹ ਕਮਾਂਡ ਵਰਤੋਂ।"
+            # --- 4. Search in main files collection (ia_filterdb) ---
+            files_collection = db.ia_filterdb
+            
+            file_list = await files_collection.find({
+                "file_name": {"$regex": re.escape(display_name), "$options": "i"}
+            }).to_list(length=10)
+            
+            if not file_list:
+                await message.reply(
+                    f"❌ ਮੂਵੀ **'{display_name}'** database ਵਿੱਚ ਨਹੀਂ ਮਿਲੀ।\n\n"
+                    "👉 ਕਿਰਪਾ ਕਰਕੇ ਪਹਿਲਾਂ ਇਸ ਮੂਵੀ ਦੀ ਕੋਈ ਫਾਈਲ ਚੈਨਲ 'ਤੇ ਆਉਣ ਦਿਓ।"
+                )
+                return
+            
+            # --- 5. Create new movie_updates entry ---
+            new_doc = {
+                "_id": movie_id,
+                "display_title": display_name,
+                "files": [
+                    {
+                        "filename": f["file_name"],
+                        "quality": media_info.get("quality", "N/A"),
+                        "language": media_info.get("language", "Hindi"),
+                        "timestamp": datetime.now()
+                    } for f in file_list[:5]
+                ],
+                "poster_url": poster_url,
+                "rating": "N/A",
+                "year": media_info.get("year"),
+                "tag": media_info.get("tag", "#MOVIE"),
+                "language": media_info.get("language", "Hindi"),
+                "message_id": None,
+                "is_posted": False
+            }
+            
+            try:
+                await db.movie_updates.insert_one(new_doc)
+                movie_doc = new_doc
+                await message.reply(f"✅ **'{display_name}'** ਲਈ ਨਵੀਂ ਐਂਟਰੀ ਬਣਾ ਦਿੱਤੀ ਗਈ।\nਹੁਣ ਪੋਸਟਰ ਸੈੱਟ ਕਰਕੇ ਚੈਨਲ 'ਤੇ ਭੇਜਿਆ ਜਾ ਰਿਹਾ ਹੈ...")
+            except DuplicateKeyError:
+                movie_doc = await db.movie_updates.find_one({"_id": movie_id})
+                if not movie_doc:
+                    await message.reply("❌ ਐਂਟਰੀ ਬਣਾਉਣ ਵਿੱਚ ਗਲਤੀ ਆਈ।")
+                    return
+        else:
+            # --- 6. Update existing movie with new poster ---
+            await db.movie_updates.update_one(
+                {"_id": movie_id},
+                {"$set": {"poster_url": poster_url}}
             )
-            return
+            await message.reply(f"✅ **'{display_name}'** ਲਈ ਪੋਸਟਰ ਅੱਪਡੇਟ ਕਰ ਦਿੱਤਾ ਗਿਆ ਹੈ।")
         
-        # Update poster URL
-        await db.movie_updates.update_one(
-            {"_id": movie_id},
-            {"$set": {"poster_url": poster_url}}
-        )
-        
-        await message.reply(f"✅ **'{movie_name}'** ਲਈ ਪੋਸਟਰ ਅੱਪਡੇਟ ਕਰ ਦਿੱਤਾ ਗਿਆ ਹੈ।\nਹੁਣ ਚੈਨਲ 'ਤੇ ਪੋਸਟ ਭੇਜੀ/ਅੱਪਡੇਟ ਕੀਤੀ ਜਾ ਰਹੀ ਹੈ...")
-        
-        # Check if post already exists
+        # --- 7. Send/update the post ---
         if movie_doc.get("message_id"):
-            # Edit existing post
             await send_movie_update(bot, movie_id, is_update=True)
         else:
-            # Send new post
             msg = await send_movie_update(bot, movie_id, is_update=False)
             if msg:
                 await db.movie_updates.update_one({"_id": movie_id}, {"$set": {"message_id": msg.id}})
                 await message.reply("✅ ਪੋਸਟ ਚੈਨਲ 'ਤੇ ਸਫ਼ਲਤਾਪੂਰਵਕ ਭੇਜ ਦਿੱਤੀ ਗਈ!")
             else:
-                await message.reply("❌ ਪੋਸਟ ਭੇਜਣ ਵਿੱਚ ਗਲਤੀ ਆਈ। ਲੌਗ ਚੈੱਕ ਕਰੋ।")
+                await message.reply("❌ ਪੋਸਟ ਭੇਜਣ ਵਿੱਚ ਗਲਤੀ ਆਈ।")
                 
     except Exception as e:
         logger.error(f"/setposter error: {e}")
