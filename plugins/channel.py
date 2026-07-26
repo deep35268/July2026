@@ -21,7 +21,7 @@ from plugins.Dreamxfutures.Imdbposter import get_movie_detailsx, get_movie_detai
 from database.users_chats_db import db
 from database.ia_filterdb import save_file
 from info import (
-    CHANNELS, MOVIE_UPDATE_CHANNEL, BAD_WORDS, LANDSCAPE_POSTER, TMDB_POSTER
+    CHANNELS, MOVIE_UPDATE_CHANNEL, BAD_WORDS, LANDSCAPE_POSTER, TMDB_POSTER, ADMINS
 )
 
 logger = logging.getLogger(__name__)
@@ -101,10 +101,10 @@ EPISODE_CLEAN_PATTERN = re.compile(r'\b(S\d{1,2}|E\d{1,3}|Ep\d{1,3}|Episode\s*\d
 
 MEDIA_FILTER = filters.document | filters.video | filters.audio
 
-# ============ CREATE TITLE-ONLY POSTER ============
+# ============ CREATE TITLE-ONLY POSTER (Backdrop + Title Overlay) ============
 
-async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[io.BytesIO]:
-    """Download backdrop, overlay title text, return BytesIO object with name."""
+async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[bytes]:
+    """Download backdrop, overlay title text, return bytes."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(backdrop_url) as resp:
@@ -143,15 +143,13 @@ async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[io
         
         output = io.BytesIO()
         image.convert("RGB").save(output, format="JPEG", quality=92)
-        output.seek(0)
-        output.name = "poster.jpg"
-        return output
+        return output.getvalue()
         
     except Exception as e:
         logger.error(f"Title-only poster generation failed: {e}")
         return None
 
-# ============ AI & OFFICIAL LANDSCAPE VALIDATION ============
+# ============ AI & OFFICIAL LANDSCAPE POSTER FETCH ============
 
 async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optional[str]:
     try:
@@ -201,14 +199,14 @@ def normalize(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 def remove_ignored_words(text: str) -> str:
-    IGNORE_WORDS_LOWER = {w.lower() for w in IGNORE_WORDS}
+    # Improved: Remove ALL ignored words instead of breaking at first.
     words = text.split()
-    cleaned_words = []
-    for word in words:
-        if word.lower() in IGNORE_WORDS_LOWER:
-            break
-        cleaned_words.append(word)
-    return " ".join(cleaned_words)
+    cleaned = []
+    IGNORE_LOWER = {w.lower() for w in IGNORE_WORDS}
+    for w in words:
+        if w.lower() not in IGNORE_LOWER:
+            cleaned.append(w)
+    return " ".join(cleaned)
 
 def extract_languages_from_text(text: str) -> set:
     found = set()
@@ -219,6 +217,7 @@ def extract_languages_from_text(text: str) -> set:
     return found
 
 def extract_media_info(filename: str, caption: str):
+    """Extract base name, year, language, quality, etc. from filename only."""
     filename_cleaned = clean_mentions_links(filename)
     filename_normalized = normalize(filename_cleaned)
 
@@ -257,7 +256,8 @@ def extract_media_info(filename: str, caption: str):
 
     return {
         "processed": filename_normalized,
-        "base_name": base_name.title(),
+        "base_name": base_name.title(),  # Display purpose
+        "base_name_key": base_name.lower(),  # DB Key purpose
         "tag": tag,
         "year": year,
         "quality": quality_str,
@@ -294,8 +294,8 @@ async def media_handler(bot, message):
 async def process_and_send_update(bot, filename, caption):
     try:
         media_info = extract_media_info(filename, caption)
-        base_name = media_info["base_name"]
-        movie_key = base_name.lower()
+        display_name = media_info["base_name"]
+        movie_key = media_info["base_name_key"]  # Lowercase for locking/caching
         
         if len(POSTED_MOVIES) > MAX_CACHE_SIZE:
             POSTED_MOVIES.clear()
@@ -303,13 +303,13 @@ async def process_and_send_update(bot, filename, caption):
         if movie_key in POSTED_MOVIES:
             return
 
-        async with locks[base_name]:
+        async with locks[movie_key]:  # Lock uses lowercase key
             if movie_key in POSTED_MOVIES:
                 return
             POSTED_MOVIES.add(movie_key)
             
             try:
-                await _process_with_lock(bot, filename, caption, media_info, base_name)
+                await _process_with_lock(bot, filename, caption, media_info, display_name)
             finally:
                 await asyncio.sleep(12)
                 POSTED_MOVIES.discard(movie_key)
@@ -317,7 +317,7 @@ async def process_and_send_update(bot, filename, caption):
     except Exception as e:
         logger.exception(f"Processing execution failed: {e}")
 
-async def _process_with_lock(bot, filename, caption, media_info, base_name):
+async def _process_with_lock(bot, filename, caption, media_info, display_name):
     if not hasattr(db, 'movie_updates'):
         db.movie_updates = db.db.movie_updates
 
@@ -329,41 +329,51 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
         "timestamp": datetime.now()
     }
 
+    movie_id = media_info["base_name_key"]  # Lowercase ID
+
     try:
         details = {}
         tmdb_language_override = None
-        
+        final_poster = None
+        is_series = (media_info["tag"] == "#SERIES")
+        year_val = media_info["year"]
+        rating_val = "N/A"
+
+        # --- FETCH METADATA (TMDB) ---
         if TMDB_POSTER:
             try:
-                details = await get_movie_detailsx(base_name)
+                details = await get_movie_detailsx(display_name)
                 if not details or details.get("error"):
                     error_tmdb = True
                 else:
                     orig_lang = details.get("original_language") or details.get("lang")
                     if orig_lang:
                         tmdb_language_override = TMDB_LANG_MAP.get(orig_lang.lower())
+                    if details.get("rating"):
+                        try:
+                            rating_val = f"{float(details.get('rating')):.1f}"
+                        except ValueError:
+                            pass
+                    if not year_val and details.get("year"):
+                        year_val = str(details.get("year")).strip()
             except Exception:
                 error_tmdb = True
                 
         if not TMDB_POSTER or error_tmdb or not details:
-            details = await get_movie_details(base_name) or {}
+            details = await get_movie_details(display_name) or {}
+            if details.get("rating"):
+                try:
+                    rating_val = f"{float(details.get('rating')):.1f}"
+                except ValueError:
+                    pass
+            if not year_val and details.get("year"):
+                year_val = str(details.get("year")).strip()
 
-        rating_val = "N/A"
-        if details.get("rating"):
-            try:
-                rating_val = f"{float(details.get('rating')):.1f}"
-            except ValueError:
-                pass
-
-        year_val = media_info["year"]
-        if not year_val and details.get("year"):
-            year_val = str(details.get("year")).strip()
-        
-        is_series = (media_info["tag"] == "#SERIES")
+        # --- SERIES YEAR FALLBACK (Cinemeta) ---
         if not year_val and is_series:
             try:
                 session = await get_session()
-                encoded_query = urllib.parse.quote(base_name)
+                encoded_query = urllib.parse.quote(display_name)
                 search_url = f"https://v3-cinemeta.strem.io/catalog/series/top/search={encoded_query}.json"
                 async with session.get(search_url, timeout=5) as resp:
                     if resp.status == 200:
@@ -377,11 +387,13 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
             except Exception as e:
                 logger.error(f"Error fetching series year from Cinemeta: {e}")
 
-        year_val = year_val or None
-        
+        # --- FETCH POSTER ---
+        final_poster = await get_landscape_poster_only(display_name, is_series)
+
+        # --- LANGUAGE OVERRIDE ---
         final_language = media_info["language"]
         if tmdb_language_override and tmdb_language_override != "N/A":
-            if final_language == "N/A" or final_language == "Hindi" or len(final_language.split(",")) <= 1:
+            if final_language == "N/A" or len(final_language.split(",")) <= 1:
                 final_language = tmdb_language_override
             else:
                 existing = set(l.strip() for l in final_language.split(","))
@@ -391,55 +403,43 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
             final_language = "Hindi"
         
         file_data["language"] = final_language
-        
-        final_poster = await get_landscape_poster_only(base_name, is_series)
 
+        # --- CHECK IF MOVIE EXISTS IN DB ---
+        existing_movie = await db.movie_updates.find_one({"_id": movie_id})
+        
+        # --- IF POSTER IS MISSING ---
         if not final_poster:
-            logger.info(f"❌ Poster NOT found for '{base_name}'. Skipping post creation.")
-            return
-
-        existing_movie = await db.movie_updates.find_one({"_id": base_name})
-        
-        post_exists = False
-        if existing_movie and existing_movie.get("message_id"):
-            try:
-                msg = await bot.get_messages(chat_id=MOVIE_UPDATE_CHANNEL, message_ids=existing_movie["message_id"])
-                if msg:
-                    post_exists = True
-                    logger.info(f"✅ Post found for '{base_name}' (message_id={existing_movie['message_id']})")
-            except MessageIdInvalid:
-                logger.warning(f"⚠️ Post for '{base_name}' no longer exists in channel. Will repost.")
-                post_exists = False
-            except Exception as e:
-                logger.error(f"Error checking post for '{base_name}': {e}")
-                post_exists = False 
-        
-        if post_exists:
-            file_exists = any(f.get("filename") == filename for f in existing_movie.get("files", []))
-            
-            update_fields = {}
-            if existing_movie.get("rating") == "N/A" and rating_val != "N/A":
-                update_fields["rating"] = rating_val
-            if not existing_movie.get("year") and year_val:
-                update_fields["year"] = year_val
-            if not existing_movie.get("poster_url") and final_poster:
-                update_fields["poster_url"] = final_poster
-            if existing_movie.get("language") != final_language and final_language != "N/A":
-                update_fields["language"] = final_language
-
-            if not file_exists:
+            logger.warning(f"❌ Poster NOT found for '{display_name}'. Saving file in DB, waiting for Admin to set poster via /setposter.")
+            # Save file to DB regardless, but do NOT send channel post yet.
+            if existing_movie:
                 await db.movie_updates.update_one(
-                    {"_id": base_name}, 
-                    {"$push": {"files": file_data}, "$set": update_fields} if update_fields else {"$push": {"files": file_data}}
+                    {"_id": movie_id},
+                    {"$push": {"files": file_data}}
                 )
-                await send_movie_update(bot, base_name, is_update=True)
-            elif update_fields:
-                await db.movie_updates.update_one({"_id": base_name}, {"$set": update_fields})
-                await send_movie_update(bot, base_name, is_update=True)
-            return
+            else:
+                movie_doc = {
+                    "_id": movie_id,
+                    "display_title": display_name,
+                    "files": [file_data],
+                    "poster_url": None,
+                    "rating": rating_val,
+                    "year": year_val,
+                    "tag": media_info["tag"],
+                    "language": final_language,
+                    "message_id": None,
+                    "is_posted": False
+                }
+                try:
+                    await db.movie_updates.insert_one(movie_doc)
+                except DuplicateKeyError:
+                    await db.movie_updates.update_one({"_id": movie_id}, {"$push": {"files": file_data}})
+            return  # Exit without sending post
+
+        # --- POSTER IS AVAILABLE. PROCEED TO POST/UPDATE ---
         
+        # Build update fields
+        update_fields = {}
         if existing_movie:
-            update_fields = {"message_id": None}
             if existing_movie.get("rating") == "N/A" and rating_val != "N/A":
                 update_fields["rating"] = rating_val
             if not existing_movie.get("year") and year_val:
@@ -448,19 +448,58 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
                 update_fields["poster_url"] = final_poster
             if existing_movie.get("language") != final_language and final_language != "N/A":
                 update_fields["language"] = final_language
-            
-            await db.movie_updates.update_one(
-                {"_id": base_name},
-                {"$push": {"files": file_data}, "$set": update_fields}
-            )
-            logger.info(f"🔄 Reposting '{base_name}' because post was deleted from channel.")
-            msg = await send_movie_update(bot, base_name, is_update=False)
-            if msg:
-                await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": msg.id}})
-            return
-        
+            if existing_movie.get("display_title") != display_name:
+                update_fields["display_title"] = display_name
+
+        # Case 1: Movie exists, check if post exists
+        if existing_movie:
+            post_exists = False
+            if existing_movie.get("message_id"):
+                try:
+                    msg = await bot.get_messages(chat_id=MOVIE_UPDATE_CHANNEL, message_ids=existing_movie["message_id"])
+                    if msg:
+                        post_exists = True
+                except MessageIdInvalid:
+                    logger.warning(f"⚠️ Post for '{display_name}' (ID {existing_movie['message_id']}) no longer exists. Reposting.")
+                    await db.movie_updates.update_one({"_id": movie_id}, {"$set": {"message_id": None}})
+                    post_exists = False
+                except Exception as e:
+                    logger.error(f"Error checking post: {e}")
+                    post_exists = False
+
+            file_exists = any(f.get("filename") == filename for f in existing_movie.get("files", []))
+
+            if post_exists:
+                # Update existing post if needed
+                if not file_exists:
+                    await db.movie_updates.update_one(
+                        {"_id": movie_id}, 
+                        {"$push": {"files": file_data}, "$set": update_fields} if update_fields else {"$push": {"files": file_data}}
+                    )
+                    await send_movie_update(bot, movie_id, is_update=True)
+                elif update_fields:
+                    await db.movie_updates.update_one({"_id": movie_id}, {"$set": update_fields})
+                    await send_movie_update(bot, movie_id, is_update=True)
+                return
+            else:
+                # Post is missing, repost it
+                if not file_exists:
+                    await db.movie_updates.update_one(
+                        {"_id": movie_id},
+                        {"$push": {"files": file_data}, "$set": {"message_id": None, **update_fields}}
+                    )
+                else:
+                    await db.movie_updates.update_one({"_id": movie_id}, {"$set": {"message_id": None, **update_fields}})
+                
+                msg = await send_movie_update(bot, movie_id, is_update=False)
+                if msg:
+                    await db.movie_updates.update_one({"_id": movie_id}, {"$set": {"message_id": msg.id}})
+                return
+
+        # Case 2: New Movie
         movie_doc = {
-            "_id": base_name,
+            "_id": movie_id,
+            "display_title": display_name,
             "files": [file_data],
             "poster_url": final_poster,
             "rating": rating_val,
@@ -473,38 +512,43 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
         
         try:
             await db.movie_updates.insert_one(movie_doc)
-            msg = await send_movie_update(bot, base_name, is_update=False)
+            msg = await send_movie_update(bot, movie_id, is_update=False)
             if msg:
-                await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": msg.id}})
+                await db.movie_updates.update_one({"_id": movie_id}, {"$set": {"message_id": msg.id}})
         except DuplicateKeyError:
-            await db.movie_updates.update_one({"_id": base_name}, {"$push": {"files": file_data}, "$set": {"message_id": None}})
-            msg = await send_movie_update(bot, base_name, is_update=False)
+            # Race condition
+            await db.movie_updates.update_one({"_id": movie_id}, {"$push": {"files": file_data}, "$set": {"message_id": None}})
+            msg = await send_movie_update(bot, movie_id, is_update=False)
             if msg:
-                await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": msg.id}})
+                await db.movie_updates.update_one({"_id": movie_id}, {"$set": {"message_id": msg.id}})
 
     except Exception as e:
         logger.error(f"Error in backend lock verification process: {e}")
 
 # ============ SEND MOVIE UPDATE ============
 
-async def send_movie_update(bot, base_name, is_update=False):
+async def send_movie_update(bot, movie_id, is_update=False):
     try:
-        movie_doc = await db.movie_updates.find_one({"_id": base_name})
+        movie_doc = await db.movie_updates.find_one({"_id": movie_id})
         if not movie_doc:
             return None
 
-        text = generate_movie_message(movie_doc, base_name)
-        buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='♻️ 𝐉𝐎𝐈𝐍 𝐑𝐄𝐐𝐔𝐄𝐒𝐓 𝐆𝐑𝐎𝐔𝐏 ♻️', url="https://t.me/+l-EIo3NnnJAxODE9")]])
+        display_name = movie_doc.get("display_title", movie_id.title())
         
+        # Check if poster exists
         poster_url = movie_doc.get("poster_url")
-        if not poster_url or not poster_url.startswith(('http://', 'https://')):
-            logger.info(f"⚠️ Invalid poster URL for '{base_name}'. Skipping post creation.")
+        if not poster_url:
+            logger.warning(f"⚠️ No poster_url set for {display_name}. Cannot send/update.")
             return None
+
+        text = generate_movie_message(movie_doc, display_name)
+        buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='♻️ 𝐉𝐎𝐈𝐍 𝐑𝐄𝐐𝐔𝐄𝐒𝐓 𝐆𝐑𝐎𝐔𝐏 ♻️', url="https://t.me/+l-EIo3NnnJAxODE9")]])
 
         sent_msg = None
 
+        # --- UPDATE CASE ---
         if is_update and movie_doc.get("message_id"):
-            image_bytes = await create_title_only_poster(poster_url, base_name)
+            image_bytes = await create_title_only_poster(poster_url, display_name)
             if image_bytes:
                 media = InputMediaPhoto(media=image_bytes, caption=text, parse_mode=enums.ParseMode.HTML)
                 try:
@@ -518,9 +562,12 @@ async def send_movie_update(bot, base_name, is_update=False):
                     sent_msg = movie_doc
                 except FloodWait as e:
                     await asyncio.sleep(e.value)
-                    return await send_movie_update(bot, base_name, is_update)
+                    return await send_movie_update(bot, movie_id, is_update)
                 except MessageIdInvalid:
-                    is_update = False
+                    # Message deleted, treat as new post
+                    logger.warning(f"Message ID invalid for {display_name}. Sending new.")
+                    await db.movie_updates.update_one({"_id": movie_id}, {"$set": {"message_id": None}})
+                    return await send_movie_update(bot, movie_id, is_update=False)
                 except Exception as e:
                     logger.error(f"Edit media error: {e}")
                     try:
@@ -534,6 +581,7 @@ async def send_movie_update(bot, base_name, is_update=False):
                     except Exception:
                         pass
             else:
+                # Fallback: edit caption only (if image fails)
                 try:
                     sent_msg = await bot.edit_message_caption(
                         chat_id=MOVIE_UPDATE_CHANNEL,
@@ -546,15 +594,18 @@ async def send_movie_update(bot, base_name, is_update=False):
                     sent_msg = movie_doc
                 except FloodWait as e:
                     await asyncio.sleep(e.value)
-                    return await send_movie_update(bot, base_name, is_update)
+                    return await send_movie_update(bot, movie_id, is_update)
                 except Exception as e:
                     logger.error(f"Caption edit failed: {e}")
                     return None
             
             if sent_msg:
                 return sent_msg
+            else:
+                return None
 
-        image_bytes = await create_title_only_poster(poster_url, base_name)
+        # --- NEW POST CASE ---
+        image_bytes = await create_title_only_poster(poster_url, display_name)
         try:
             if image_bytes:
                 sent_msg = await bot.send_photo(
@@ -565,6 +616,7 @@ async def send_movie_update(bot, base_name, is_update=False):
                     parse_mode=enums.ParseMode.HTML
                 )
             else:
+                # In case title poster fails, try sending raw URL (but ensure it's valid)
                 sent_msg = await bot.send_photo(
                     chat_id=MOVIE_UPDATE_CHANNEL,
                     photo=poster_url,
@@ -574,24 +626,24 @@ async def send_movie_update(bot, base_name, is_update=False):
                 )
         except FloodWait as e:
             await asyncio.sleep(e.value)
-            return await send_movie_update(bot, base_name, is_update)
+            return await send_movie_update(bot, movie_id, is_update)
         except Exception as e:
             logger.error(f"New send failed: {e}")
+            # Last resort: send without photo (text only) - but better to fail gracefully.
             try:
-                sent_msg = await bot.send_photo(
+                sent_msg = await bot.send_message(
                     chat_id=MOVIE_UPDATE_CHANNEL,
-                    photo=poster_url,
-                    caption=text,
+                    text=text,
                     reply_markup=buttons,
                     parse_mode=enums.ParseMode.HTML
                 )
             except Exception as e2:
-                logger.error(f"Second send attempt failed: {e2}")
+                logger.error(f"Text-only send also failed: {e2}")
                 return None
 
         if sent_msg and hasattr(sent_msg, 'id'):
-            await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": sent_msg.id}})
-            asyncio.create_task(verify_and_correct_post_with_ai(bot, sent_msg.id, base_name, buttons))
+            await db.movie_updates.update_one({"_id": movie_id}, {"$set": {"message_id": sent_msg.id, "is_posted": True}})
+            asyncio.create_task(verify_and_correct_post_with_ai(bot, sent_msg.id, movie_id, buttons))
             return sent_msg
 
     except Exception as e:
@@ -600,14 +652,15 @@ async def send_movie_update(bot, base_name, is_update=False):
 
 # ============ AI DOUBLE CHECK & AUTO CORRECTION ============
 
-async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, buttons):
+async def verify_and_correct_post_with_ai(bot, message_id: int, movie_id: str, buttons):
     try:
         await asyncio.sleep(60)
-        movie_doc = await db.movie_updates.find_one({"_id": base_name})
+        movie_doc = await db.movie_updates.find_one({"_id": movie_id})
         if not movie_doc or not movie_doc.get("poster_url"):
             return
 
-        correct_text = generate_movie_message(movie_doc, base_name)
+        display_name = movie_doc.get("display_title", movie_id.title())
+        correct_text = generate_movie_message(movie_doc, display_name)
         
         try:
             live_msg = await bot.get_messages(chat_id=MOVIE_UPDATE_CHANNEL, message_ids=message_id)
@@ -630,8 +683,9 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, 
         except MessageNotModified:
             pass 
         except FloodWait as e:
+            logger.warning(f"AI engine hit floodwait. Sleeping for {e.value} seconds.")
             await asyncio.sleep(e.value + 5)
-            await verify_and_correct_post_with_ai(bot, message_id, base_name, buttons)
+            await verify_and_correct_post_with_ai(bot, message_id, movie_id, buttons)
         except Exception as msg_err:
             logger.error(f"Error while fetching or editing live message for AI verification: {msg_err}")
             
@@ -639,10 +693,10 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, 
         logger.error(f"Critical error in AI Double-Check Engine: {e}")
 
 # ==================================================
-# 🟢 GENERATE MOVIE MESSAGE - FINAL VERSION
+# 🟢 GENERATE MOVIE MESSAGE
 # ==================================================
 
-def generate_movie_message(movie_doc, base_name) -> str:
+def generate_movie_message(movie_doc, display_name) -> str:
     all_languages = set()
     for file in movie_doc["files"]:
         if file.get("language") and file["language"] != "N/A":
@@ -653,7 +707,7 @@ def generate_movie_message(movie_doc, base_name) -> str:
     
     language_str = " ".join(f"#{lang}" for lang in sorted(all_languages)) if all_languages else "#Hindi"
     
-    title = html.escape(base_name.upper())
+    title = html.escape(display_name.upper())
     title = re.sub(r'\b10BIT\b', '', title, flags=re.IGNORECASE)
     title = re.sub(r'\s+', ' ', title).strip()
     
@@ -676,4 +730,65 @@ def generate_movie_message(movie_doc, base_name) -> str:
         f"⭐ IMDb: {rating_str}\n\n"
         f"➡ Audio Track: 🔊 {language_str}\n\n"
         f"✅ Added"
-)
+    )
+
+# ==================================================
+# 🟢 ADMIN COMMAND: /setposter (Manual Override)
+# ==================================================
+
+@Client.on_message(filters.command("setposter") & filters.user(ADMINS))
+async def set_poster_cmd(bot: Client, message: Message):
+    try:
+        text = message.text.split("/setposter", 1)[-1].strip()
+        if "|" not in text:
+            await message.reply(
+                "❌ **ਗਲਤ ਫਾਰਮੈਟ!**\n\n"
+                "✅ **ਸਹੀ ਤਰੀਕਾ:**\n"
+                "`/setposter ਮੂਵੀ ਦਾ ਨਾਮ | ਪੋਸਟਰ URL`\n\n"
+                "**ਉਦਾਹਰਨ:**\n"
+                "`/setposter Sathayavaan Sothanai | https://example.com/poster.jpg`"
+            )
+            return
+        
+        movie_name, poster_url = text.split("|", 1)
+        movie_name = movie_name.strip()
+        poster_url = poster_url.strip()
+        
+        if not poster_url.startswith(("http://", "https://")):
+            await message.reply("❌ URL `http://` ਜਾਂ `https://` ਨਾਲ ਸ਼ੁਰੂ ਹੋਣਾ ਚਾਹੀਦਾ ਹੈ।")
+            return
+        
+        movie_id = movie_name.lower()
+        movie_doc = await db.movie_updates.find_one({"_id": movie_id})
+        
+        if not movie_doc:
+            await message.reply(
+                f"❌ ਮੂਵੀ **'{movie_name}'** database ਵਿੱਚ ਨਹੀਂ ਮਿਲੀ।\n\n"
+                "👉 ਕਿਰਪਾ ਕਰਕੇ ਪਹਿਲਾਂ ਇਸ ਮੂਵੀ ਦੀ ਕੋਈ ਫਾਈਲ ਚੈਨਲ 'ਤੇ ਆਉਣ ਦਿਓ, ਫਿਰ ਇਹ ਕਮਾਂਡ ਵਰਤੋਂ।"
+            )
+            return
+        
+        # Update poster URL
+        await db.movie_updates.update_one(
+            {"_id": movie_id},
+            {"$set": {"poster_url": poster_url}}
+        )
+        
+        await message.reply(f"✅ **'{movie_name}'** ਲਈ ਪੋਸਟਰ ਅੱਪਡੇਟ ਕਰ ਦਿੱਤਾ ਗਿਆ ਹੈ।\nਹੁਣ ਚੈਨਲ 'ਤੇ ਪੋਸਟ ਭੇਜੀ/ਅੱਪਡੇਟ ਕੀਤੀ ਜਾ ਰਹੀ ਹੈ...")
+        
+        # Check if post already exists
+        if movie_doc.get("message_id"):
+            # Edit existing post
+            await send_movie_update(bot, movie_id, is_update=True)
+        else:
+            # Send new post
+            msg = await send_movie_update(bot, movie_id, is_update=False)
+            if msg:
+                await db.movie_updates.update_one({"_id": movie_id}, {"$set": {"message_id": msg.id}})
+                await message.reply("✅ ਪੋਸਟ ਚੈਨਲ 'ਤੇ ਸਫ਼ਲਤਾਪੂਰਵਕ ਭੇਜ ਦਿੱਤੀ ਗਈ!")
+            else:
+                await message.reply("❌ ਪੋਸਟ ਭੇਜਣ ਵਿੱਚ ਗਲਤੀ ਆਈ। ਲੌਗ ਚੈੱਕ ਕਰੋ।")
+                
+    except Exception as e:
+        logger.error(f"/setposter error: {e}")
+        await message.reply(f"❌ ਗਲਤੀ: {e}")
