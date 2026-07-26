@@ -686,7 +686,7 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, movie_id: str, b
 
 def generate_movie_message(movie_doc, display_name) -> str:
     all_languages = set()
-    for file in movie_doc["files"]:
+    for file in movie_doc.get("files", []):  # handle empty files list
         if file.get("language") and file["language"] != "N/A":
             all_languages.update(l.strip() for l in file["language"].split(",") if l.strip())
     
@@ -721,13 +721,13 @@ def generate_movie_message(movie_doc, display_name) -> str:
     )
 
 # ==================================================
-# 🟢 ADMIN COMMAND: /setposter (Auto-Detect Movie Name from Reply or Pipe)
+# 🟢 ADMIN COMMAND: /setposter (Create post without file)
 # ==================================================
 
 @Client.on_message(filters.command("setposter") & filters.user(ADMINS))
 async def set_poster_cmd(bot: Client, message: Message):
     try:
-        # --- 1. Extract poster URL from command ---
+        # --- 1. Extract poster URL and movie name ---
         text = message.text.split("/setposter", 1)[-1].strip()
         if not text:
             await message.reply(
@@ -773,69 +773,68 @@ async def set_poster_cmd(bot: Client, message: Message):
             await message.reply("❌ URL `http://` ਜਾਂ `https://` ਨਾਲ ਸ਼ੁਰੂ ਹੋਣਾ ਚਾਹੀਦਾ ਹੈ।")
             return
         
-        # --- 6. Extract movie info from filename ---
+        # --- 6. Extract movie info from filename (year, language, etc.) ---
         media_info = extract_media_info(movie_name, "")
         display_name = media_info["base_name"]
         movie_id = media_info["base_name_key"]
         
-        # --- 7. Check if movie exists in movie_updates ---
+        # --- 7. Try to fetch TMDB metadata (rating, year, language) ---
+        tmdb_rating = "N/A"
+        tmdb_year = media_info.get("year")
+        tmdb_language = media_info.get("language", "Hindi")
+        tmdb_tag = media_info.get("tag", "#MOVIE")
+        
+        try:
+            details = await get_movie_detailsx(display_name)
+            if details and not details.get("error"):
+                if details.get("rating"):
+                    try:
+                        tmdb_rating = f"{float(details.get('rating')):.1f}"
+                    except:
+                        pass
+                if details.get("year") and not tmdb_year:
+                    tmdb_year = str(details.get("year")).strip()
+                orig_lang = details.get("original_language")
+                if orig_lang:
+                    tmdb_language = TMDB_LANG_MAP.get(orig_lang.lower(), tmdb_language)
+        except Exception as e:
+            logger.warning(f"TMDB fetch failed for {display_name}: {e}")
+        
+        # --- 8. Check if movie already exists in movie_updates ---
         movie_doc = await db.movie_updates.find_one({"_id": movie_id})
         
-        if not movie_doc:
-            # --- 8. Search in main files collection (ia_filterdb) ---
-            # ✅ FIX: Use db.db.ia_filterdb instead of db.ia_filterdb
-            files_collection = db.db.ia_filterdb
-            
-            file_list = await files_collection.find({
-                "file_name": {"$regex": re.escape(display_name), "$options": "i"}
-            }).to_list(length=10)
-            
-            if not file_list:
-                await message.reply(
-                    f"❌ ਮੂਵੀ **'{display_name}'** database ਵਿੱਚ ਨਹੀਂ ਮਿਲੀ।\n\n"
-                    "👉 ਕਿਰਪਾ ਕਰਕੇ ਪਹਿਲਾਂ ਇਸ ਮੂਵੀ ਦੀ ਕੋਈ ਫਾਈਲ ਚੈਨਲ 'ਤੇ ਆਉਣ ਦਿਓ।"
-                )
-                return
-            
-            # --- 9. Create new movie_updates entry ---
-            new_doc = {
-                "_id": movie_id,
-                "display_title": display_name,
-                "files": [
-                    {
-                        "filename": f["file_name"],
-                        "quality": media_info.get("quality", "N/A"),
-                        "language": media_info.get("language", "Hindi"),
-                        "timestamp": datetime.now()
-                    } for f in file_list[:5]
-                ],
-                "poster_url": poster_url,
-                "rating": "N/A",
-                "year": media_info.get("year"),
-                "tag": media_info.get("tag", "#MOVIE"),
-                "language": media_info.get("language", "Hindi"),
-                "message_id": None,
-                "is_posted": False
-            }
-            
-            try:
-                await db.movie_updates.insert_one(new_doc)
-                movie_doc = new_doc
-                await message.reply(f"✅ **'{display_name}'** ਲਈ ਨਵੀਂ ਐਂਟਰੀ ਬਣਾ ਦਿੱਤੀ ਗਈ।\nਹੁਣ ਪੋਸਟਰ ਸੈੱਟ ਕਰਕੇ ਚੈਨਲ 'ਤੇ ਭੇਜਿਆ ਜਾ ਰਿਹਾ ਹੈ...")
-            except DuplicateKeyError:
-                movie_doc = await db.movie_updates.find_one({"_id": movie_id})
-                if not movie_doc:
-                    await message.reply("❌ ਐਂਟਰੀ ਬਣਾਉਣ ਵਿੱਚ ਗਲਤੀ ਆਈ।")
-                    return
-        else:
-            # --- 10. Update existing movie with new poster ---
+        if movie_doc:
+            # --- Update existing movie with new poster ---
             await db.movie_updates.update_one(
                 {"_id": movie_id},
                 {"$set": {"poster_url": poster_url}}
             )
             await message.reply(f"✅ **'{display_name}'** ਲਈ ਪੋਸਟਰ ਅੱਪਡੇਟ ਕਰ ਦਿੱਤਾ ਗਿਆ ਹੈ।")
+        else:
+            # --- CREATE NEW ENTRY (even if no files exist) ---
+            new_doc = {
+                "_id": movie_id,
+                "display_title": display_name,
+                "files": [],  # Empty files array
+                "poster_url": poster_url,
+                "rating": tmdb_rating,
+                "year": tmdb_year,
+                "tag": tmdb_tag,
+                "language": tmdb_language,
+                "message_id": None,
+                "is_posted": False
+            }
+            try:
+                await db.movie_updates.insert_one(new_doc)
+                movie_doc = new_doc
+                await message.reply(f"✅ **'{display_name}'** ਲਈ ਨਵੀਂ ਐਂਟਰੀ ਬਣਾ ਦਿੱਤੀ ਗਈ (ਬਿਨਾਂ ਫਾਈਲਾਂ ਦੇ)।")
+            except DuplicateKeyError:
+                movie_doc = await db.movie_updates.find_one({"_id": movie_id})
+                if not movie_doc:
+                    await message.reply("❌ ਐਂਟਰੀ ਬਣਾਉਣ ਵਿੱਚ ਗਲਤੀ ਆਈ।")
+                    return
         
-        # --- 11. Send/update the post ---
+        # --- 9. Send/update the post ---
         if movie_doc.get("message_id"):
             await send_movie_update(bot, movie_id, is_update=True)
         else:
