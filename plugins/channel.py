@@ -12,7 +12,7 @@ from typing import Optional
 from PIL import Image, ImageDraw, ImageFont
 
 from pyrogram import Client, filters, enums
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, Message  # <-- ਇੱਥੇ Message ਜੋੜਿਆ
 from pyrogram.errors import MessageIdInvalid, MessageNotModified, FloodWait
 from pymongo.errors import DuplicateKeyError
 
