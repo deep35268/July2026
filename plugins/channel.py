@@ -103,8 +103,8 @@ MEDIA_FILTER = filters.document | filters.video | filters.audio
 
 # ============ CREATE TITLE-ONLY POSTER ============
 
-async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[bytes]:
-    """Download backdrop, overlay title text, return bytes."""
+async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[io.BytesIO]:
+    """Download backdrop, overlay title text, return BytesIO object with name."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(backdrop_url) as resp:
@@ -143,7 +143,9 @@ async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[by
         
         output = io.BytesIO()
         image.convert("RGB").save(output, format="JPEG", quality=92)
-        return output.getvalue()
+        output.seek(0)
+        output.name = "poster.jpg"
+        return output
         
     except Exception as e:
         logger.error(f"Title-only poster generation failed: {e}")
@@ -217,7 +219,6 @@ def extract_languages_from_text(text: str) -> set:
     return found
 
 def extract_media_info(filename: str, caption: str):
-    """Extract base name, year, language, quality, etc. from filename only."""
     filename_cleaned = clean_mentions_links(filename)
     filename_normalized = normalize(filename_cleaned)
 
@@ -378,7 +379,6 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
 
         year_val = year_val or None
         
-        # ✅ Language: TMDB original_language ਨੂੰ ਪ੍ਰਾਥਮਿਕਤਾ
         final_language = media_info["language"]
         if tmdb_language_override and tmdb_language_override != "N/A":
             if final_language == "N/A" or final_language == "Hindi" or len(final_language.split(",")) <= 1:
@@ -398,26 +398,22 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
             logger.info(f"❌ Poster NOT found for '{base_name}'. Skipping post creation.")
             return
 
-        # ---------- Check if movie exists in DB ----------
         existing_movie = await db.movie_updates.find_one({"_id": base_name})
         
-        # ---------- If exists, verify if post still exists in channel ----------
         post_exists = False
         if existing_movie and existing_movie.get("message_id"):
             try:
-                # Try to get the message from the channel
                 msg = await bot.get_messages(chat_id=MOVIE_UPDATE_CHANNEL, message_ids=existing_movie["message_id"])
                 if msg:
                     post_exists = True
                     logger.info(f"✅ Post found for '{base_name}' (message_id={existing_movie['message_id']})")
             except MessageIdInvalid:
-                logger.warning(f"⚠️ Post for '{base_name}' (ID {existing_movie['message_id']}) no longer exists in channel. Will repost.")
+                logger.warning(f"⚠️ Post for '{base_name}' no longer exists in channel. Will repost.")
                 post_exists = False
             except Exception as e:
                 logger.error(f"Error checking post for '{base_name}': {e}")
-                post_exists = False  # Assume doesn't exist
+                post_exists = False 
         
-        # ---------- If post exists, update it ----------
         if post_exists:
             file_exists = any(f.get("filename") == filename for f in existing_movie.get("files", []))
             
@@ -442,10 +438,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
                 await send_movie_update(bot, base_name, is_update=True)
             return
         
-        # ---------- Post doesn't exist OR movie not in DB: Create new post ----------
         if existing_movie:
-            # Movie exists in DB but post is gone: we need to reset message_id and post again
-            # We'll update the existing doc with new file and reset message_id
             update_fields = {"message_id": None}
             if existing_movie.get("rating") == "N/A" and rating_val != "N/A":
                 update_fields["rating"] = rating_val
@@ -461,13 +454,11 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
                 {"$push": {"files": file_data}, "$set": update_fields}
             )
             logger.info(f"🔄 Reposting '{base_name}' because post was deleted from channel.")
-            # Now send new post
             msg = await send_movie_update(bot, base_name, is_update=False)
             if msg:
                 await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": msg.id}})
             return
         
-        # ---------- New movie: Create document and send new post ----------
         movie_doc = {
             "_id": base_name,
             "files": [file_data],
@@ -486,7 +477,6 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
             if msg:
                 await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": msg.id}})
         except DuplicateKeyError:
-            # Race condition: another process inserted it, just update
             await db.movie_updates.update_one({"_id": base_name}, {"$push": {"files": file_data}, "$set": {"message_id": None}})
             msg = await send_movie_update(bot, base_name, is_update=False)
             if msg:
@@ -513,7 +503,6 @@ async def send_movie_update(bot, base_name, is_update=False):
 
         sent_msg = None
 
-        # --- UPDATE CASE (Post exists in channel, just edit) ---
         if is_update and movie_doc.get("message_id"):
             image_bytes = await create_title_only_poster(poster_url, base_name)
             if image_bytes:
@@ -531,7 +520,6 @@ async def send_movie_update(bot, base_name, is_update=False):
                     await asyncio.sleep(e.value)
                     return await send_movie_update(bot, base_name, is_update)
                 except MessageIdInvalid:
-                    logger.warning(f"Message ID invalid for {base_name}, will send new.")
                     is_update = False
                 except Exception as e:
                     logger.error(f"Edit media error: {e}")
@@ -565,11 +553,7 @@ async def send_movie_update(bot, base_name, is_update=False):
             
             if sent_msg:
                 return sent_msg
-            else:
-                logger.warning(f"Update failed for {base_name}, not creating duplicate.")
-                return None
 
-        # --- NEW POST CASE ---
         image_bytes = await create_title_only_poster(poster_url, base_name)
         try:
             if image_bytes:
@@ -646,7 +630,6 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, 
         except MessageNotModified:
             pass 
         except FloodWait as e:
-            logger.warning(f"AI engine hit floodwait. Sleeping for {e.value} seconds.")
             await asyncio.sleep(e.value + 5)
             await verify_and_correct_post_with_ai(bot, message_id, base_name, buttons)
         except Exception as msg_err:
@@ -657,8 +640,6 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, 
 
 # ==================================================
 # 🟢 GENERATE MOVIE MESSAGE - FINAL VERSION
-# ✅ English Caption | ❌ Removed "/10" from Rating
-# ✅ Audio Track shows only filename languages
 # ==================================================
 
 def generate_movie_message(movie_doc, base_name) -> str:
