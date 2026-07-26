@@ -783,7 +783,8 @@ async def set_poster_cmd(bot: Client, message: Message):
         
         if not movie_doc:
             # --- 8. Search in main files collection (ia_filterdb) ---
-            files_collection = db.ia_filterdb
+            # ✅ FIX: Use db.db.ia_filterdb instead of db.ia_filterdb
+            files_collection = db.db.ia_filterdb
             
             file_list = await files_collection.find({
                 "file_name": {"$regex": re.escape(display_name), "$options": "i"}
