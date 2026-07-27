@@ -38,10 +38,13 @@ POSTED_MOVIES = set()
 MAX_CACHE_SIZE = 500
 locks = defaultdict(asyncio.Lock)
 
-# ============ 48-HOUR CONSTANT REMOVED ============
+# ============ SPIDY API CONFIG ============
+SPIDY_API_KEY = "spidy_1wtzdn9wplo"  # <-- Your API key
+SPIDY_API_URL = "https://poster-api.ispidy.com/v1/fetch"
 
+# ============ IGNORED WORDS ============
 IGNORE_WORDS = {
-    "rarbg", "dub", "sub", "sample", "mkv", "aac", "combined", "mp4", "avi",
+    "rarbg", "dub", "sample", "mkv", "aac", "combined", "mp4", "avi",
     "action", "adventure", "animation", "biography", "comedy", "crime", 
     "documentary", "drama", "fantasy", "film-noir", "history", 
     "horror", "music", "musical", "mystery", "romance", "sci-fi", "sport", 
@@ -55,16 +58,18 @@ IGNORE_WORDS = {
     "japanese", "nf", "netflix", "sonyliv", "sony", "sliv", "amzn", "prime", 
     "primevideo", "hotstar", "zee5", "jio", "jiohotstar", "jhs", "aha", "hbo", "paramount", 
     "apple", "hoichoi", "sunnxt", "viki", "x264", "x265", "avc", "dd5", "dovi", "hdr",
-    "10bit", "10-bit", "8bit", "8-bit"
+    "10bit", "10-bit", "8bit", "8-bit",
+    "subtitle", "subtitles", "srt", "subs"
 } | BAD_WORDS
 
+# ============ LANGUAGE MAPPINGS ============
 TMDB_LANG_MAP = {
     "hi": "Hindi", "ta": "Tamil", "te": "Telugu", "ml": "Malayalam",
     "kn": "Kannada", "en": "English", "bn": "Bengali", "mr": "Marathi",
     "gu": "Gujarati", "pa": "Punjabi", "ur": "Urdu", "ko": "Korean",
     "ja": "Japanese", "es": "Spanish", "fr": "French", "de": "German",
     "zh": "Chinese", "ru": "Russian", "it": "Italian", "pt": "Portuguese",
-    "ar": "Arabic", "nl": "Dutch", "sv": "Swedish", "pl": "Polish",
+    "ara": "Arabic", "nl": "Dutch", "sv": "Swedish", "pl": "Polish",
     "vi": "Vietnamese", "th": "Thai", "id": "Indonesian", "ms": "Malay",
     "tr": "Turkish", "el": "Greek", "he": "Hebrew", "cs": "Czech",
     "da": "Danish", "fi": "Finnish", "hu": "Hungarian", "no": "Norwegian",
@@ -79,6 +84,13 @@ CAPTION_LANGUAGES = {
     "mar": "Marathi", "marathi": "Marathi", "guj": "Gujarati", "gujarati": "Gujarati",
     "urd": "Urdu", "urdu": "Urdu", "kor": "Korean", "korean": "Korean",
     "jpn": "Japanese", "japanese": "Japanese",
+    "spa": "Spanish", "spanish": "Spanish",
+    "fre": "French", "french": "French",
+    "ger": "German", "german": "German",
+    "chi": "Chinese", "chinese": "Chinese",
+    "rus": "Russian", "russian": "Russian",
+    "ita": "Italian", "italian": "Italian",
+    "por": "Portuguese", "portuguese": "Portuguese",
 }
 
 OTT_PLATFORMS = {
@@ -90,6 +102,7 @@ OTT_PLATFORMS = {
     "hoichoi": "Hoichoi", "sunnxt": "Sun NXT", "viki": "Viki"
 }
 
+# ============ PATTERNS ============
 CLEAN_PATTERN = re.compile(r'@[^ \n\r\t\.,:;!?()\[\]{}<>\\/"\'=_%]+|\bwww\.[^\s\]\)]+|\([\@^]+\)|\[[\@^]+\]')
 NORMALIZE_PATTERN = re.compile(r"[._\-\+]+|[()\[\]{}:;'–!,.?]")
 QUALITY_PATTERN = re.compile(
@@ -151,9 +164,10 @@ async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[by
         logger.error(f"Title-only poster generation failed: {e}")
         return None
 
-# ============ AI & OFFICIAL LANDSCAPE VALIDATION ============
+# ============ POSTER SOURCES ============
 
 async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optional[str]:
+    """Fetch poster from Stremio Cinemeta."""
     try:
         session = await get_session()
         m_type = "series" if is_series else "movie"
@@ -172,7 +186,80 @@ async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optio
         logger.error(f"Cinemeta AI Metadata Error: {e}")
     return None
 
-async def get_landscape_poster_only(movie_name: str, is_series: bool = False) -> Optional[str]:
+# ============================================================
+# 🟢 SPIDY API – WITH EXACT TITLE MATCH PRIORITY
+# ============================================================
+async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year: Optional[str] = None) -> Optional[str]:
+    """
+    Fetch landscape poster from Spidy Poster API.
+    Priority: results with exact title match (case-insensitive) first.
+    """
+    try:
+        session = await get_session()
+        
+        params = {
+            "api_key": SPIDY_API_KEY,
+            "title": query,
+        }
+        if year and year != "N/A":
+            params["year"] = year
+        if is_series:
+            params["season"] = "1"   # Default season for series
+        
+        async with session.get(SPIDY_API_URL, params=params, timeout=15) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                results = data.get("results", [])
+                if not results or not isinstance(results, list):
+                    logger.warning(f"⚠️ Spidy API: No results or invalid format for '{query}'")
+                    return None
+                
+                # Step 1: Try to find a result with exact title match (case-insensitive)
+                query_lower = query.lower()
+                exact_match = None
+                for item in results:
+                    item_title = item.get("title", "")
+                    if item_title.lower() == query_lower:
+                        landscape = item.get("landscape")
+                        if landscape and landscape.startswith(('http://', 'https://')):
+                            exact_match = landscape
+                            logger.info(f"✅ Spidy API: Found exact title match '{item_title}' for '{query}'")
+                            break
+                
+                if exact_match:
+                    return exact_match
+                
+                # Step 2: Fallback – any result with landscape
+                for item in results:
+                    landscape = item.get("landscape")
+                    if landscape and landscape.startswith(('http://', 'https://')):
+                        logger.info(f"✅ Spidy API: Found fallback landscape for '{query}' (title: {item.get('title')})")
+                        return landscape
+                
+                logger.warning(f"⚠️ Spidy API: No landscape in any result for '{query}'")
+                
+            elif resp.status == 404:
+                logger.info(f"❌ Spidy API: Poster not found for '{query}'")
+            elif resp.status == 429:
+                logger.warning(f"⚠️ Spidy API: Rate limit exceeded for '{query}'")
+            else:
+                logger.warning(f"⚠️ Spidy API: Status {resp.status} for '{query}'")
+                
+    except asyncio.TimeoutError:
+        logger.error(f"⏱️ Spidy API timeout for '{query}'")
+    except Exception as e:
+        logger.error(f"❌ Spidy API error for '{query}': {e}")
+    
+    return None
+
+# ============================================================
+# ORCHESTRATOR – TRY MULTIPLE SOURCES
+# ============================================================
+async def get_landscape_poster_only(movie_name: str, is_series: bool = False, year: Optional[str] = None) -> Optional[str]:
+    """
+    Try multiple sources in order: TMDB → Stremio Cinemeta → Spidy API
+    """
+    # 1. TMDB (if LANDSCAPE_POSTER is enabled)
     if LANDSCAPE_POSTER:
         try:
             details = await get_movie_detailsx(movie_name)
@@ -181,14 +268,24 @@ async def get_landscape_poster_only(movie_name: str, is_series: bool = False) ->
                 if "t/p/" in backdrop:
                     backdrop = re.sub(r'/t/p/w\d+/', '/t/p/original/', backdrop)
                     backdrop = re.sub(r'/t/p/w\d+x\d+/', '/t/p/original/', backdrop)
+                logger.info(f"✅ TMDB poster found for '{movie_name}'")
                 return backdrop
         except Exception as e:
             logger.error(f"TMDB backdrop error: {e}")
     
+    # 2. Stremio Cinemeta (AI)
     ai_backdrop = await fetch_cinemeta_ai_poster(movie_name, is_series)
     if ai_backdrop:
+        logger.info(f"✅ Cinemeta poster found for '{movie_name}'")
         return ai_backdrop
-        
+    
+    # 3. Spidy Poster API (with exact title priority)
+    spidy_backdrop = await fetch_spidy_landscape_poster(movie_name, is_series, year)
+    if spidy_backdrop:
+        logger.info(f"✅ Spidy poster found for '{movie_name}'")
+        return spidy_backdrop
+
+    logger.info(f"❌ No poster found for '{movie_name}' from any source")
     return None
 
 # ============ CLEANING AND EXTRACTION FUNCTIONS ============
@@ -211,11 +308,22 @@ def remove_ignored_words(text: str) -> str:
     return " ".join(cleaned_words)
 
 def extract_languages_from_text(text: str) -> set:
+    """Extract languages from filename, ignoring subtitle-related tokens."""
+    SUBTITLE_KEYWORDS = {"sub", "subtitle", "subtitles", "srt", "subs"}
+    
     found = set()
     text_lower = text.lower()
-    for lang_key, lang_name in CAPTION_LANGUAGES.items():
-        if re.search(rf'\b{re.escape(lang_key)}\b', text_lower):
-            found.add(lang_name)
+    for sep in ['.', '_', '-', '+', ' ', '(', ')', '[', ']', '{', '}', ';', ',']:
+        text_lower = text_lower.replace(sep, ' ')
+    tokens = text_lower.split()
+    
+    for token in tokens:
+        if token in SUBTITLE_KEYWORDS:
+            continue
+        for lang_key, lang_name in CAPTION_LANGUAGES.items():
+            if lang_key in token:
+                found.add(lang_name)
+                break
     return found
 
 def extract_media_info(filename: str, caption: str):
@@ -319,7 +427,7 @@ async def process_and_send_update(bot, filename, caption):
         logger.exception(f"Processing execution failed: {e}")
 
 # ============================================================
-# 🟢 MODIFIED: _process_with_lock (48-hour logic removed)
+# MAIN PROCESSING – UPDATED WITH ALL FIXES
 # ============================================================
 async def _process_with_lock(bot, filename, caption, media_info, base_name):
     if not hasattr(db, 'movie_updates'):
@@ -383,21 +491,30 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
 
         year_val = year_val or None
         
-        # Language: TMDB original_language priority
-        final_language = media_info["language"]
-        if tmdb_language_override and tmdb_language_override != "N/A":
-            if final_language == "N/A" or final_language == "Hindi" or len(final_language.split(",")) <= 1:
-                final_language = tmdb_language_override
-            else:
-                existing = set(l.strip() for l in final_language.split(","))
-                existing.add(tmdb_language_override)
-                final_language = ", ".join(sorted(existing))
-        elif final_language == "N/A":
-            final_language = "Hindi"
+        # ============================================================
+        # IMPROVED LANGUAGE LOGIC – Filename first, TMDB adds only if missing
+        # ============================================================
+        lang_set = set()
+        raw_lang = media_info["language"]
+        if raw_lang != "N/A":
+            lang_set.update(l.strip() for l in raw_lang.split(",") if l.strip())
         
+        if tmdb_language_override and tmdb_language_override != "N/A":
+            lang_set.add(tmdb_language_override)
+        
+        if not lang_set:
+            if tmdb_language_override and tmdb_language_override != "N/A":
+                lang_set.add(tmdb_language_override)
+            else:
+                lang_set.add("Hindi")
+        
+        final_language = ", ".join(sorted(lang_set))
         file_data["language"] = final_language
         
-        final_poster = await get_landscape_poster_only(base_name, is_series)
+        # ============================================================
+        # GET POSTER – Now includes Spidy API with year + exact title priority
+        # ============================================================
+        final_poster = await get_landscape_poster_only(base_name, is_series, year_val)
 
         if not final_poster:
             logger.info(f"❌ Poster NOT found for '{base_name}'. Skipping post creation.")
@@ -419,9 +536,9 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
                 post_exists = False
             except Exception as e:
                 logger.error(f"Error checking post for '{base_name}': {e}")
-                post_exists = False  # Assume doesn't exist
+                post_exists = False
         
-        # ---------- If post exists, update it (no time check, because auto-delete ensures it's <24h) ----------
+        # ---------- If post exists, update it (no time check, auto-delete ensures <24h) ----------
         if post_exists:
             file_exists = any(f.get("filename") == filename for f in existing_movie.get("files", []))
             
@@ -435,7 +552,6 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
             if existing_movie.get("language") != final_language and final_language != "N/A":
                 update_fields["language"] = final_language
 
-            # Update DB
             if not file_exists:
                 await db.movie_updates.update_one(
                     {"_id": base_name}, 
@@ -444,17 +560,15 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
             elif update_fields:
                 await db.movie_updates.update_one({"_id": base_name}, {"$set": update_fields})
             
-            # ✅ Since post is still in channel, simply edit it (within 24h auto-delete window)
-            logger.info(f"✏️ Editing existing post for '{base_name}' (within auto-delete window).")
+            logger.info(f"✏️ Editing existing post for '{base_name}'")
             await send_movie_update(bot, base_name, is_update=True)
             return
         
         # ---------- Post doesn't exist OR movie not in DB: Create new post ----------
         if existing_movie:
-            # Movie exists in DB but post is gone (likely auto-deleted). Repost with fresh timestamp.
             update_fields = {
                 "message_id": None,
-                "first_posted_at": datetime.now()  # reset timestamp for new post
+                "first_posted_at": datetime.now()
             }
             if existing_movie.get("rating") == "N/A" and rating_val != "N/A":
                 update_fields["rating"] = rating_val
@@ -475,7 +589,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
                 await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": msg.id}})
             return
         
-        # ---------- New movie: Create document and send new post ----------
+        # ---------- New movie ----------
         movie_doc = {
             "_id": base_name,
             "files": [file_data],
@@ -486,7 +600,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
             "language": final_language,
             "message_id": None,
             "is_posted": True,
-            "first_posted_at": datetime.now()   # timestamp for future reference
+            "first_posted_at": datetime.now()
         }
         
         try:
@@ -495,7 +609,6 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
             if msg:
                 await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": msg.id}})
         except DuplicateKeyError:
-            # Race condition: another process inserted it, just update
             await db.movie_updates.update_one(
                 {"_id": base_name},
                 {"$push": {"files": file_data}, "$set": {"message_id": None, "first_posted_at": datetime.now()}}
@@ -507,7 +620,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
     except Exception as e:
         logger.error(f"Error in backend lock verification process: {e}")
 
-# ============ SEND MOVIE UPDATE (unchanged) ============
+# ============ SEND MOVIE UPDATE ============
 
 async def send_movie_update(bot, base_name, is_update=False):
     try:
@@ -626,7 +739,7 @@ async def send_movie_update(bot, base_name, is_update=False):
         logger.error(f"Failed to push update layout: {e}")
     return None
 
-# ============ AI DOUBLE CHECK & AUTO CORRECTION (unchanged) ============
+# ============ AI DOUBLE CHECK & AUTO CORRECTION ============
 
 async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, buttons):
     try:
@@ -668,7 +781,7 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, 
         logger.error(f"Critical error in AI Double-Check Engine: {e}")
 
 # ==================================================
-# 🟢 GENERATE MOVIE MESSAGE (unchanged)
+# GENERATE MOVIE MESSAGE
 # ==================================================
 
 def generate_movie_message(movie_doc, base_name) -> str:
