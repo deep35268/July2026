@@ -116,54 +116,6 @@ EPISODE_CLEAN_PATTERN = re.compile(r'\b(S\d{1,2}|E\d{1,3}|Ep\d{1,3}|Episode\s*\d
 
 MEDIA_FILTER = filters.document | filters.video | filters.audio
 
-# ============ CREATE TITLE-ONLY POSTER ============
-
-async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[bytes]:
-    """Download backdrop, overlay title text, return bytes."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(backdrop_url) as resp:
-                if resp.status != 200:
-                    return None
-                img_data = await resp.read()
-        
-        image = Image.open(io.BytesIO(img_data)).convert("RGBA")
-        img_w, img_h = image.size
-        draw = ImageDraw.Draw(image)
-        
-        try:
-            font_size = int(img_w * 0.10)
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-        except:
-            font = ImageFont.load_default()
-            font_size = 20
-        
-        wrapped_title = textwrap.fill(title.upper(), width=14)
-        bbox = draw.textbbox((0, 0), wrapped_title, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        x = (img_w - text_w) // 2
-        y = (img_h - text_h) // 2 - int(text_h * 0.2)
-        
-        overlay = Image.new('RGBA', (img_w, img_h), (0, 0, 0, 0))
-        overlay_draw = ImageDraw.Draw(overlay)
-        padding = 25
-        overlay_draw.rectangle(
-            [x - padding, y - padding, x + text_w + padding, y + text_h + padding],
-            fill=(0, 0, 0, 170)
-        )
-        image = Image.alpha_composite(image, overlay)
-        draw = ImageDraw.Draw(image)
-        draw.text((x, y), wrapped_title, font=font, fill=(255, 255, 255, 255))
-        
-        output = io.BytesIO()
-        image.convert("RGB").save(output, format="JPEG", quality=92)
-        return output.getvalue()
-        
-    except Exception as e:
-        logger.error(f"Title-only poster generation failed: {e}")
-        return None
-
 # ============ POSTER SOURCES ============
 
 async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optional[str]:
@@ -187,65 +139,76 @@ async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optio
     return None
 
 # ============================================================
-# 🟢 SPIDY API – WITH EXACT TITLE MATCH PRIORITY
+# 🟢 SPIDY API – WITH EXACT TITLE MATCH & CLEAN QUERY
 # ============================================================
 async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year: Optional[str] = None) -> Optional[str]:
     """
     Fetch landscape poster from Spidy Poster API.
-    Priority: results with exact title match (case-insensitive) first.
+    Cleans query to remove episode/season info, then tries exact title match.
     """
     try:
         session = await get_session()
         
+        # Clean query: remove season/episode patterns
+        clean_query = query
+        clean_query = re.sub(r'\bS\d{1,2}E\d{1,2}\b', '', clean_query, flags=re.IGNORECASE)
+        clean_query = re.sub(r'\bS\d{1,2}\b', '', clean_query, flags=re.IGNORECASE)
+        clean_query = re.sub(r'\bE\d{1,3}\b', '', clean_query, flags=re.IGNORECASE)
+        clean_query = re.sub(r'\bSeason\s*\d{1,2}\b', '', clean_query, flags=re.IGNORECASE)
+        clean_query = re.sub(r'\bEpisode\s*\d{1,3}\b', '', clean_query, flags=re.IGNORECASE)
+        clean_query = re.sub(r'\bPart\s*\d{1,2}\b', '', clean_query, flags=re.IGNORECASE)
+        clean_query = re.sub(r'\b\d{1,2}\s*-\s*\d{1,2}\b', '', clean_query, flags=re.IGNORECASE)
+        clean_query = re.sub(r'\b\d{1,3}\s*to\s*\d{1,3}\b', '', clean_query, flags=re.IGNORECASE)
+        clean_query = re.sub(r'\s+', ' ', clean_query).strip()
+        
+        if clean_query != query:
+            logger.info(f"🧹 Cleaned query for Spidy: '{clean_query}' (original: '{query}')")
+        else:
+            logger.info(f"🔍 Spidy query: '{clean_query}'")
+        
         params = {
             "api_key": SPIDY_API_KEY,
-            "title": query,
+            "title": clean_query,
         }
         if year and year != "N/A":
             params["year"] = year
-        if is_series:
-            params["season"] = "1"   # Default season for series
-        
-        logger.info(f"🔍 Spidy API request: {params}")
         
         async with session.get(SPIDY_API_URL, params=params, timeout=15) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 results = data.get("results", [])
                 if not results or not isinstance(results, list):
-                    logger.warning(f"⚠️ Spidy API: No results or invalid format for '{query}'")
+                    logger.warning(f"⚠️ Spidy API: No results or invalid format for '{clean_query}'")
                     return None
                 
-                # Step 1: Exact title match (case-insensitive)
-                query_lower = query.lower()
+                query_lower = clean_query.lower()
+                # Exact title match
                 for item in results:
                     item_title = item.get("title", "")
                     if item_title.lower() == query_lower:
                         landscape = item.get("landscape")
                         if landscape and landscape.startswith(('http://', 'https://')):
-                            logger.info(f"✅ Spidy API: Found exact title match '{item_title}' for '{query}'")
+                            logger.info(f"✅ Spidy API: Found exact title match '{item_title}' for '{clean_query}'")
                             return landscape
                 
-                # Step 2: Fallback – any result with landscape
+                # Fallback: any landscape
                 for item in results:
                     landscape = item.get("landscape")
                     if landscape and landscape.startswith(('http://', 'https://')):
-                        logger.info(f"✅ Spidy API: Found fallback landscape for '{query}' (title: {item.get('title')})")
+                        logger.info(f"✅ Spidy API: Found fallback landscape for '{clean_query}' (title: {item.get('title')})")
                         return landscape
                 
-                logger.warning(f"⚠️ Spidy API: No landscape in any result for '{query}'")
+                logger.warning(f"⚠️ Spidy API: No landscape in any result for '{clean_query}'")
             elif resp.status == 404:
-                logger.info(f"❌ Spidy API: Poster not found for '{query}'")
+                logger.info(f"❌ Spidy API: Poster not found for '{clean_query}'")
             elif resp.status == 429:
-                logger.warning(f"⚠️ Spidy API: Rate limit exceeded for '{query}'")
+                logger.warning(f"⚠️ Spidy API: Rate limit exceeded for '{clean_query}'")
             else:
-                logger.warning(f"⚠️ Spidy API: Status {resp.status} for '{query}'")
-                
+                logger.warning(f"⚠️ Spidy API: Status {resp.status} for '{clean_query}'")
     except asyncio.TimeoutError:
         logger.error(f"⏱️ Spidy API timeout for '{query}'")
     except Exception as e:
         logger.error(f"❌ Spidy API error for '{query}': {e}")
-    
     return None
 
 # ============================================================
@@ -617,7 +580,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
         logger.error(f"Error in backend lock verification process: {e}")
 
 # ============================================================
-# 🟢 SEND MOVIE UPDATE – WITH BytesIO FIX
+# 🟢 SEND MOVIE UPDATE – ORIGINAL POSTER (NO TEXT OVERLAY)
 # ============================================================
 async def send_movie_update(bot, base_name, is_update=False):
     try:
@@ -637,42 +600,25 @@ async def send_movie_update(bot, base_name, is_update=False):
 
         # --- UPDATE CASE ---
         if is_update and movie_doc.get("message_id"):
-            image_bytes = await create_title_only_poster(poster_url, base_name)
-            if image_bytes:
-                # 🟢 FIX: Wrap bytes in BytesIO
-                image_io = io.BytesIO(image_bytes)
-                image_io.name = f"{base_name}.jpg"
-                media = InputMediaPhoto(media=image_io, caption=text, parse_mode=enums.ParseMode.HTML)
-                try:
-                    sent_msg = await bot.edit_message_media(
-                        chat_id=MOVIE_UPDATE_CHANNEL,
-                        message_id=movie_doc["message_id"],
-                        media=media,
-                        reply_markup=buttons
-                    )
-                except MessageNotModified:
-                    sent_msg = movie_doc
-                except FloodWait as e:
-                    await asyncio.sleep(e.value)
-                    return await send_movie_update(bot, base_name, is_update)
-                except MessageIdInvalid:
-                    logger.warning(f"Message ID invalid for {base_name}, will send new.")
-                    is_update = False
-                except Exception as e:
-                    logger.error(f"Edit media error: {e}")
-                    # Fallback: try editing only caption
-                    try:
-                        sent_msg = await bot.edit_message_caption(
-                            chat_id=MOVIE_UPDATE_CHANNEL,
-                            message_id=movie_doc["message_id"],
-                            caption=text,
-                            reply_markup=buttons,
-                            parse_mode=enums.ParseMode.HTML
-                        )
-                    except Exception:
-                        pass
-            else:
-                # No image generated, just edit caption
+            try:
+                # Edit with original poster URL (no overlay)
+                sent_msg = await bot.edit_message_media(
+                    chat_id=MOVIE_UPDATE_CHANNEL,
+                    message_id=movie_doc["message_id"],
+                    media=InputMediaPhoto(media=poster_url, caption=text, parse_mode=enums.ParseMode.HTML),
+                    reply_markup=buttons
+                )
+            except MessageNotModified:
+                sent_msg = movie_doc
+            except FloodWait as e:
+                await asyncio.sleep(e.value)
+                return await send_movie_update(bot, base_name, is_update)
+            except MessageIdInvalid:
+                logger.warning(f"Message ID invalid for {base_name}, will send new.")
+                is_update = False
+            except Exception as e:
+                logger.error(f"Edit media error: {e}")
+                # Fallback: try editing only caption
                 try:
                     sent_msg = await bot.edit_message_caption(
                         chat_id=MOVIE_UPDATE_CHANNEL,
@@ -681,14 +627,8 @@ async def send_movie_update(bot, base_name, is_update=False):
                         reply_markup=buttons,
                         parse_mode=enums.ParseMode.HTML
                     )
-                except MessageNotModified:
-                    sent_msg = movie_doc
-                except FloodWait as e:
-                    await asyncio.sleep(e.value)
-                    return await send_movie_update(bot, base_name, is_update)
-                except Exception as e:
-                    logger.error(f"Caption edit failed: {e}")
-                    return None
+                except Exception:
+                    pass
             
             if sent_msg:
                 return sent_msg
@@ -697,44 +637,20 @@ async def send_movie_update(bot, base_name, is_update=False):
                 return None
 
         # --- NEW POST CASE ---
-        image_bytes = await create_title_only_poster(poster_url, base_name)
         try:
-            if image_bytes:
-                # 🟢 FIX: Wrap bytes in BytesIO
-                image_io = io.BytesIO(image_bytes)
-                image_io.name = f"{base_name}.jpg"
-                sent_msg = await bot.send_photo(
-                    chat_id=MOVIE_UPDATE_CHANNEL,
-                    photo=image_io,
-                    caption=text,
-                    reply_markup=buttons,
-                    parse_mode=enums.ParseMode.HTML
-                )
-            else:
-                sent_msg = await bot.send_photo(
-                    chat_id=MOVIE_UPDATE_CHANNEL,
-                    photo=poster_url,
-                    caption=text,
-                    reply_markup=buttons,
-                    parse_mode=enums.ParseMode.HTML
-                )
+            sent_msg = await bot.send_photo(
+                chat_id=MOVIE_UPDATE_CHANNEL,
+                photo=poster_url,
+                caption=text,
+                reply_markup=buttons,
+                parse_mode=enums.ParseMode.HTML
+            )
         except FloodWait as e:
             await asyncio.sleep(e.value)
             return await send_movie_update(bot, base_name, is_update)
         except Exception as e:
             logger.error(f"New send failed: {e}")
-            # Retry with original URL
-            try:
-                sent_msg = await bot.send_photo(
-                    chat_id=MOVIE_UPDATE_CHANNEL,
-                    photo=poster_url,
-                    caption=text,
-                    reply_markup=buttons,
-                    parse_mode=enums.ParseMode.HTML
-                )
-            except Exception as e2:
-                logger.error(f"Second send attempt failed: {e2}")
-                return None
+            return None
 
         if sent_msg and hasattr(sent_msg, 'id'):
             await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": sent_msg.id}})
