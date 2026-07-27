@@ -39,10 +39,10 @@ MAX_CACHE_SIZE = 500
 locks = defaultdict(asyncio.Lock)
 
 # ============ SPIDY API CONFIG ============
-SPIDY_API_KEY = "spidy_1wtzdn9wplo"  # <-- Your API key
+SPIDY_API_KEY = "spidy_1wtzdn9wplo"  # <-- Your Spidy API Key
 SPIDY_API_URL = "https://poster-api.ispidy.com/v1/fetch"
 
-# ============ IGNORED WORDS ============
+# ============ IGNORED WORDS (including subtitle) ============
 IGNORE_WORDS = {
     "rarbg", "dub", "sample", "mkv", "aac", "combined", "mp4", "avi",
     "action", "adventure", "animation", "biography", "comedy", "crime", 
@@ -59,7 +59,7 @@ IGNORE_WORDS = {
     "primevideo", "hotstar", "zee5", "jio", "jiohotstar", "jhs", "aha", "hbo", "paramount", 
     "apple", "hoichoi", "sunnxt", "viki", "x264", "x265", "avc", "dd5", "dovi", "hdr",
     "10bit", "10-bit", "8bit", "8-bit",
-    "subtitle", "subtitles", "srt", "subs"
+    "subtitle", "subtitles", "srt", "subs"  # <-- Subtitle ignored
 } | BAD_WORDS
 
 # ============ LANGUAGE MAPPINGS ============
@@ -167,7 +167,7 @@ async def create_title_only_poster(backdrop_url: str, title: str) -> Optional[by
 # ============ POSTER SOURCES ============
 
 async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optional[str]:
-    """Fetch poster from Stremio Cinemeta."""
+    """Fetch poster from Stremio Cinemeta (fallback)."""
     try:
         session = await get_session()
         m_type = "series" if is_series else "movie"
@@ -206,6 +206,8 @@ async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year
         if is_series:
             params["season"] = "1"   # Default season for series
         
+        logger.info(f"🔍 Spidy API request: {params}")
+        
         async with session.get(SPIDY_API_URL, params=params, timeout=15) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -214,20 +216,15 @@ async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year
                     logger.warning(f"⚠️ Spidy API: No results or invalid format for '{query}'")
                     return None
                 
-                # Step 1: Try to find a result with exact title match (case-insensitive)
+                # Step 1: Exact title match (case-insensitive)
                 query_lower = query.lower()
-                exact_match = None
                 for item in results:
                     item_title = item.get("title", "")
                     if item_title.lower() == query_lower:
                         landscape = item.get("landscape")
                         if landscape and landscape.startswith(('http://', 'https://')):
-                            exact_match = landscape
                             logger.info(f"✅ Spidy API: Found exact title match '{item_title}' for '{query}'")
-                            break
-                
-                if exact_match:
-                    return exact_match
+                            return landscape
                 
                 # Step 2: Fallback – any result with landscape
                 for item in results:
@@ -237,7 +234,6 @@ async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year
                         return landscape
                 
                 logger.warning(f"⚠️ Spidy API: No landscape in any result for '{query}'")
-                
             elif resp.status == 404:
                 logger.info(f"❌ Spidy API: Poster not found for '{query}'")
             elif resp.status == 429:
@@ -253,13 +249,19 @@ async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year
     return None
 
 # ============================================================
-# ORCHESTRATOR – TRY MULTIPLE SOURCES
+# 🟢 ORCHESTRATOR – SPIDY FIRST, THEN TMDB, THEN CINEMETA
 # ============================================================
 async def get_landscape_poster_only(movie_name: str, is_series: bool = False, year: Optional[str] = None) -> Optional[str]:
     """
-    Try multiple sources in order: TMDB → Stremio Cinemeta → Spidy API
+    Try sources in order: Spidy API → TMDB → Stremio Cinemeta.
     """
-    # 1. TMDB (if LANDSCAPE_POSTER is enabled)
+    # 1️⃣ Spidy Poster API (with exact title priority)
+    spidy_backdrop = await fetch_spidy_landscape_poster(movie_name, is_series, year)
+    if spidy_backdrop:
+        logger.info(f"✅ Spidy poster found for '{movie_name}'")
+        return spidy_backdrop
+
+    # 2️⃣ TMDB (if LANDSCAPE_POSTER is enabled)
     if LANDSCAPE_POSTER:
         try:
             details = await get_movie_detailsx(movie_name)
@@ -272,18 +274,12 @@ async def get_landscape_poster_only(movie_name: str, is_series: bool = False, ye
                 return backdrop
         except Exception as e:
             logger.error(f"TMDB backdrop error: {e}")
-    
-    # 2. Stremio Cinemeta (AI)
+
+    # 3️⃣ Stremio Cinemeta (AI Fallback)
     ai_backdrop = await fetch_cinemeta_ai_poster(movie_name, is_series)
     if ai_backdrop:
         logger.info(f"✅ Cinemeta poster found for '{movie_name}'")
         return ai_backdrop
-    
-    # 3. Spidy Poster API (with exact title priority)
-    spidy_backdrop = await fetch_spidy_landscape_poster(movie_name, is_series, year)
-    if spidy_backdrop:
-        logger.info(f"✅ Spidy poster found for '{movie_name}'")
-        return spidy_backdrop
 
     logger.info(f"❌ No poster found for '{movie_name}' from any source")
     return None
@@ -512,7 +508,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
         file_data["language"] = final_language
         
         # ============================================================
-        # GET POSTER – Now includes Spidy API with year + exact title priority
+        # 🟢 GET POSTER – Spidy FIRST (with year)
         # ============================================================
         final_poster = await get_landscape_poster_only(base_name, is_series, year_val)
 
@@ -620,8 +616,9 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
     except Exception as e:
         logger.error(f"Error in backend lock verification process: {e}")
 
-# ============ SEND MOVIE UPDATE ============
-
+# ============================================================
+# 🟢 SEND MOVIE UPDATE – WITH BytesIO FIX
+# ============================================================
 async def send_movie_update(bot, base_name, is_update=False):
     try:
         movie_doc = await db.movie_updates.find_one({"_id": base_name})
@@ -642,7 +639,10 @@ async def send_movie_update(bot, base_name, is_update=False):
         if is_update and movie_doc.get("message_id"):
             image_bytes = await create_title_only_poster(poster_url, base_name)
             if image_bytes:
-                media = InputMediaPhoto(media=image_bytes, caption=text, parse_mode=enums.ParseMode.HTML)
+                # 🟢 FIX: Wrap bytes in BytesIO
+                image_io = io.BytesIO(image_bytes)
+                image_io.name = f"{base_name}.jpg"
+                media = InputMediaPhoto(media=image_io, caption=text, parse_mode=enums.ParseMode.HTML)
                 try:
                     sent_msg = await bot.edit_message_media(
                         chat_id=MOVIE_UPDATE_CHANNEL,
@@ -660,6 +660,7 @@ async def send_movie_update(bot, base_name, is_update=False):
                     is_update = False
                 except Exception as e:
                     logger.error(f"Edit media error: {e}")
+                    # Fallback: try editing only caption
                     try:
                         sent_msg = await bot.edit_message_caption(
                             chat_id=MOVIE_UPDATE_CHANNEL,
@@ -671,6 +672,7 @@ async def send_movie_update(bot, base_name, is_update=False):
                     except Exception:
                         pass
             else:
+                # No image generated, just edit caption
                 try:
                     sent_msg = await bot.edit_message_caption(
                         chat_id=MOVIE_UPDATE_CHANNEL,
@@ -698,9 +700,12 @@ async def send_movie_update(bot, base_name, is_update=False):
         image_bytes = await create_title_only_poster(poster_url, base_name)
         try:
             if image_bytes:
+                # 🟢 FIX: Wrap bytes in BytesIO
+                image_io = io.BytesIO(image_bytes)
+                image_io.name = f"{base_name}.jpg"
                 sent_msg = await bot.send_photo(
                     chat_id=MOVIE_UPDATE_CHANNEL,
-                    photo=image_bytes,
+                    photo=image_io,
                     caption=text,
                     reply_markup=buttons,
                     parse_mode=enums.ParseMode.HTML
@@ -718,6 +723,7 @@ async def send_movie_update(bot, base_name, is_update=False):
             return await send_movie_update(bot, base_name, is_update)
         except Exception as e:
             logger.error(f"New send failed: {e}")
+            # Retry with original URL
             try:
                 sent_msg = await bot.send_photo(
                     chat_id=MOVIE_UPDATE_CHANNEL,
