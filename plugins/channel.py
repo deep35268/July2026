@@ -72,7 +72,6 @@ IGNORE_WORDS = {
     "primevideo", "hotstar", "zee5", "jio", "jiohotstar", "jhs", "aha", "hbo", "paramount", 
     "apple", "hoichoi", "sunnxt", "viki", "x264", "x265", "avc", "dd5", "dovi", "hdr",
     "10bit", "10-bit", "8bit", "8-bit",
-    # Subtitle related – IGNORED
     "subtitle", "subtitles", "srt", "subs"
 } | BAD_WORDS
 
@@ -133,7 +132,6 @@ MEDIA_FILTER = filters.document | filters.video | filters.audio
 # ============ POSTER SOURCES ============
 
 async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optional[str]:
-    """Fetch poster from Stremio Cinemeta (fallback)."""
     try:
         session = await get_session()
         m_type = "series" if is_series else "movie"
@@ -153,7 +151,6 @@ async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optio
     return None
 
 async def fetch_omdb_poster(query: str, year: Optional[str] = None) -> Optional[str]:
-    """Fetch poster from OMDb API."""
     try:
         session = await get_session()
         params = {
@@ -180,7 +177,6 @@ async def fetch_omdb_poster(query: str, year: Optional[str] = None) -> Optional[
     return None
 
 async def fetch_fanart_landscape_poster(tmdb_id: str) -> Optional[str]:
-    """Fetch landscape (moviebackground) from fanart.tv using TMDB ID."""
     if not tmdb_id:
         return None
     try:
@@ -207,16 +203,13 @@ async def fetch_fanart_landscape_poster(tmdb_id: str) -> Optional[str]:
     return None
 
 async def fetch_openposterdb_landscape(tmdb_id: str) -> Optional[str]:
-    """Fetch backdrop from OpenPosterDB using TMDB ID."""
     if not tmdb_id:
         return None
     try:
         session = await get_session()
-        # Try hosted endpoint first
         url = f"{OPENPOSTERDB_API_URL}/t0-free-rpdb/tmdb/backdrop-default/{tmdb_id}.jpg"
         async with session.get(url, timeout=10) as resp:
             if resp.status == 200:
-                # If we get an image, return the URL itself
                 logger.info(f"✅ OpenPosterDB: Found backdrop for TMDB ID {tmdb_id}")
                 return url
             else:
@@ -225,18 +218,9 @@ async def fetch_openposterdb_landscape(tmdb_id: str) -> Optional[str]:
         logger.error(f"❌ OpenPosterDB error for TMDB ID {tmdb_id}: {e}")
     return None
 
-# ============================================================
-# 🟢 SPIDY API – WITH EXACT TITLE MATCH & CLEAN QUERY
-# ============================================================
 async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year: Optional[str] = None) -> Optional[str]:
-    """
-    Fetch landscape poster from Spidy Poster API.
-    Cleans query to remove episode/season info, then tries exact title match.
-    """
     try:
         session = await get_session()
-        
-        # Clean query: remove season/episode patterns
         clean_query = query
         clean_query = re.sub(r'\bS\d{1,2}E\d{1,2}\b', '', clean_query, flags=re.IGNORECASE)
         clean_query = re.sub(r'\bS\d{1,2}\b', '', clean_query, flags=re.IGNORECASE)
@@ -269,7 +253,6 @@ async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year
                     return None
                 
                 query_lower = clean_query.lower()
-                # Exact title match
                 for item in results:
                     item_title = item.get("title", "")
                     if item_title.lower() == query_lower:
@@ -278,7 +261,6 @@ async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year
                             logger.info(f"✅ Spidy API: Found exact title match '{item_title}' for '{clean_query}'")
                             return landscape
                 
-                # Fallback: any landscape
                 for item in results:
                     landscape = item.get("landscape")
                     if landscape and landscape.startswith(('http://', 'https://')):
@@ -298,33 +280,27 @@ async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year
         logger.error(f"❌ Spidy API error for '{query}': {e}")
     return None
 
-# ============================================================
-# 🟢 ORCHESTRATOR – ALL SOURCES WITH FALLBACK
-# ============================================================
 async def get_landscape_poster_only(movie_name: str, is_series: bool = False, year: Optional[str] = None, tmdb_id: Optional[str] = None) -> Optional[str]:
-    """
-    Try sources in order: Spidy API → Fanart.tv → OMDb → TMDB → Cinemeta → OpenPosterDB.
-    """
-    # 1️⃣ Spidy Poster API (with exact title priority)
+    # 1️⃣ Spidy
     spidy_backdrop = await fetch_spidy_landscape_poster(movie_name, is_series, year)
     if spidy_backdrop:
         logger.info(f"✅ Spidy poster found for '{movie_name}'")
         return spidy_backdrop
 
-    # 2️⃣ Fanart.tv (if TMDB ID available)
+    # 2️⃣ Fanart.tv
     if tmdb_id:
         fanart_backdrop = await fetch_fanart_landscape_poster(tmdb_id)
         if fanart_backdrop:
             logger.info(f"✅ Fanart.tv poster found for '{movie_name}'")
             return fanart_backdrop
 
-    # 3️⃣ OMDb API
+    # 3️⃣ OMDb
     omdb_poster = await fetch_omdb_poster(movie_name, year)
     if omdb_poster:
         logger.info(f"✅ OMDb poster found for '{movie_name}'")
         return omdb_poster
 
-    # 4️⃣ TMDB (if LANDSCAPE_POSTER is enabled)
+    # 4️⃣ TMDB
     if LANDSCAPE_POSTER:
         try:
             details = await get_movie_detailsx(movie_name)
@@ -338,13 +314,13 @@ async def get_landscape_poster_only(movie_name: str, is_series: bool = False, ye
         except Exception as e:
             logger.error(f"TMDB backdrop error: {e}")
 
-    # 5️⃣ Stremio Cinemeta (AI Fallback)
+    # 5️⃣ Cinemeta
     ai_backdrop = await fetch_cinemeta_ai_poster(movie_name, is_series)
     if ai_backdrop:
         logger.info(f"✅ Cinemeta poster found for '{movie_name}'")
         return ai_backdrop
 
-    # 6️⃣ OpenPosterDB (last resort – only if TMDB ID available)
+    # 6️⃣ OpenPosterDB
     if tmdb_id:
         openposter_backdrop = await fetch_openposterdb_landscape(tmdb_id)
         if openposter_backdrop:
@@ -354,7 +330,7 @@ async def get_landscape_poster_only(movie_name: str, is_series: bool = False, ye
     logger.info(f"❌ No poster found for '{movie_name}' from any source")
     return None
 
-# ============ CLEANING AND EXTRACTION FUNCTIONS ============
+# ============ CLEANING AND EXTRACTION ============
 
 def clean_mentions_links(text: str) -> str:
     return CLEAN_PATTERN.sub("", text or "").strip()
@@ -374,15 +350,12 @@ def remove_ignored_words(text: str) -> str:
     return " ".join(cleaned_words)
 
 def extract_languages_from_text(text: str) -> set:
-    """Extract languages from filename, ignoring subtitle-related tokens."""
     SUBTITLE_KEYWORDS = {"sub", "subtitle", "subtitles", "srt", "subs"}
-    
     found = set()
     text_lower = text.lower()
     for sep in ['.', '_', '-', '+', ' ', '(', ')', '[', ']', '{', '}', ';', ',']:
         text_lower = text_lower.replace(sep, ' ')
     tokens = text_lower.split()
-    
     for token in tokens:
         if token in SUBTITLE_KEYWORDS:
             continue
@@ -392,18 +365,36 @@ def extract_languages_from_text(text: str) -> set:
                 break
     return found
 
+# ============================================================
+# 🟢 MAIN FUNCTION – EXTRACTS LANGUAGES & SOURCE TAGS
+# ============================================================
 def extract_media_info(filename: str, caption: str):
-    """Extract base name, year, language, quality, etc. from filename only."""
     filename_cleaned = clean_mentions_links(filename)
     filename_normalized = normalize(filename_cleaned)
 
     tag = "#MOVIE"
     year = None
     
+    # 🟢 Extract source tags ONLY (WEBDL, BLURAY, PREDVD, ORG, etc.)
+    source_keywords = [
+        "WEBDL", "WEBRIP", "BLURAY", "BRRIP", "PREDVD", 
+        "DVDSCR", "DVDRIP", "HDTV", "HDCAM", "HDRIP", "ORG"
+    ]
+    source_tags = []
+    for part in re.split(r'[._\-+ ]', filename_normalized):
+        part_clean = part.upper()
+        if part_clean in source_keywords:
+            source_tags.append(f"#{part_clean}")
+    
+    tags_str = " ".join(source_tags[:2]) if source_tags else ""
+    
+    # Quality tags are EXCLUDED from display
     quality = QUALITY_PATTERN.findall(filename_normalized)
     quality_str = ", ".join(quality) if quality else "N/A"
+    
     ott_platform = extract_ott_platform(filename_normalized)
-
+    
+    # 🟢 Extract languages (NO DEFAULT HINDI)
     lang_set = set()
     lang_set.update(extract_languages_from_text(filename_normalized))
     language = ", ".join(sorted(lang_set)) if lang_set else "N/A"
@@ -430,6 +421,8 @@ def extract_media_info(filename: str, caption: str):
         base_name = re.sub(r'\bS\d{1,2}\b', '', base_name, flags=re.IGNORECASE).strip()
         base_name = normalize(base_name)
 
+    normalized_key = re.sub(r'[^a-z0-9]', '', base_name.lower())
+
     return {
         "processed": filename_normalized,
         "base_name": base_name.title(),
@@ -437,7 +430,9 @@ def extract_media_info(filename: str, caption: str):
         "year": year,
         "quality": quality_str,
         "ott_platform": ott_platform,
-        "language": language
+        "language": language,      # extracted languages only, no fallback
+        "normalized_key": normalized_key,
+        "tags": tags_str           # source tags only
     }
 
 def extract_ott_platform(text: str) -> str:
@@ -470,7 +465,8 @@ async def process_and_send_update(bot, filename, caption):
     try:
         media_info = extract_media_info(filename, caption)
         base_name = media_info["base_name"]
-        movie_key = base_name.lower()
+        normalized_key = media_info["normalized_key"]
+        movie_key = normalized_key
         
         if len(POSTED_MOVIES) > MAX_CACHE_SIZE:
             POSTED_MOVIES.clear()
@@ -478,13 +474,13 @@ async def process_and_send_update(bot, filename, caption):
         if movie_key in POSTED_MOVIES:
             return
 
-        async with locks[base_name]:
+        async with locks[normalized_key]:
             if movie_key in POSTED_MOVIES:
                 return
             POSTED_MOVIES.add(movie_key)
             
             try:
-                await _process_with_lock(bot, filename, caption, media_info, base_name)
+                await _process_with_lock(bot, filename, caption, media_info, base_name, normalized_key)
             finally:
                 await asyncio.sleep(12)
                 POSTED_MOVIES.discard(movie_key)
@@ -492,10 +488,7 @@ async def process_and_send_update(bot, filename, caption):
     except Exception as e:
         logger.exception(f"Processing execution failed: {e}")
 
-# ============================================================
-# MAIN PROCESSING – UPDATED WITH ALL FIXES
-# ============================================================
-async def _process_with_lock(bot, filename, caption, media_info, base_name):
+async def _process_with_lock(bot, filename, caption, media_info, base_name, normalized_key):
     if not hasattr(db, 'movie_updates'):
         db.movie_updates = db.db.movie_updates
 
@@ -503,7 +496,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
     file_data = {
         "filename": filename,
         "quality": media_info["quality"],
-        "language": media_info["language"],
+        "language": media_info["language"],  # extracted languages only
         "timestamp": datetime.now()
     }
 
@@ -562,27 +555,27 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
         year_val = year_val or None
         
         # ============================================================
-        # 🟢 IMPROVED LANGUAGE LOGIC – SUBTITLES IGNORED
+        # 🟢 LANGUAGE LOGIC – NO DEFAULT HINDI
         # ============================================================
         lang_set = set()
         raw_lang = media_info["language"]
         if raw_lang != "N/A":
             lang_set.update(l.strip() for l in raw_lang.split(",") if l.strip())
         
+        # Add TMDB original language ONLY if we have one
         if tmdb_language_override and tmdb_language_override != "N/A":
             lang_set.add(tmdb_language_override)
         
-        if not lang_set:
-            if tmdb_language_override and tmdb_language_override != "N/A":
-                lang_set.add(tmdb_language_override)
-            else:
-                lang_set.add("Hindi")
+        # 🟢 NO DEFAULT FALLBACK – if no languages found, keep "N/A"
+        if lang_set:
+            final_language = ", ".join(sorted(lang_set))
+        else:
+            final_language = "N/A"
         
-        final_language = ", ".join(sorted(lang_set))
         file_data["language"] = final_language
         
         # ============================================================
-        # 🟢 GET POSTER – ALL SOURCES WITH TMDB ID
+        # GET POSTER
         # ============================================================
         final_poster = await get_landscape_poster_only(base_name, is_series, year_val, str(tmdb_id) if tmdb_id else None)
 
@@ -590,10 +583,8 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
             logger.info(f"❌ Poster NOT found for '{base_name}'. Skipping post creation.")
             return
 
-        # ---------- Check if movie exists in DB ----------
-        existing_movie = await db.movie_updates.find_one({"_id": base_name})
+        existing_movie = await db.movie_updates.find_one({"_id": normalized_key})
         
-        # ---------- If exists, verify if post still exists in channel ----------
         post_exists = False
         if existing_movie and existing_movie.get("message_id"):
             try:
@@ -602,13 +593,12 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
                     post_exists = True
                     logger.info(f"✅ Post found for '{base_name}' (message_id={existing_movie['message_id']})")
             except MessageIdInvalid:
-                logger.warning(f"⚠️ Post for '{base_name}' (ID {existing_movie['message_id']}) no longer exists in channel. Will repost.")
+                logger.warning(f"⚠️ Post for '{base_name}' (ID {existing_movie['message_id']}) no longer exists. Will repost.")
                 post_exists = False
             except Exception as e:
                 logger.error(f"Error checking post for '{base_name}': {e}")
                 post_exists = False
         
-        # ---------- If post exists, update it ----------
         if post_exists:
             file_exists = any(f.get("filename") == filename for f in existing_movie.get("files", []))
             
@@ -621,20 +611,22 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
                 update_fields["poster_url"] = final_poster
             if existing_movie.get("language") != final_language and final_language != "N/A":
                 update_fields["language"] = final_language
+            # 🟢 Update tags if changed
+            if existing_movie.get("tags") != media_info.get("tags"):
+                update_fields["tags"] = media_info.get("tags", "")
 
             if not file_exists:
                 await db.movie_updates.update_one(
-                    {"_id": base_name}, 
+                    {"_id": normalized_key}, 
                     {"$push": {"files": file_data}, "$set": update_fields} if update_fields else {"$push": {"files": file_data}}
                 )
             elif update_fields:
-                await db.movie_updates.update_one({"_id": base_name}, {"$set": update_fields})
+                await db.movie_updates.update_one({"_id": normalized_key}, {"$set": update_fields})
             
             logger.info(f"✏️ Editing existing post for '{base_name}'")
-            await send_movie_update(bot, base_name, is_update=True)
+            await send_movie_update(bot, normalized_key, is_update=True)
             return
         
-        # ---------- Post doesn't exist OR movie not in DB: Create new post ----------
         if existing_movie:
             update_fields = {
                 "message_id": None,
@@ -648,26 +640,29 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
                 update_fields["poster_url"] = final_poster
             if existing_movie.get("language") != final_language and final_language != "N/A":
                 update_fields["language"] = final_language
+            if existing_movie.get("tags") != media_info.get("tags"):
+                update_fields["tags"] = media_info.get("tags", "")
             
             await db.movie_updates.update_one(
-                {"_id": base_name},
+                {"_id": normalized_key},
                 {"$push": {"files": file_data}, "$set": update_fields}
             )
             logger.info(f"🔄 Reposting '{base_name}' because old post was auto-deleted.")
-            msg = await send_movie_update(bot, base_name, is_update=False)
+            msg = await send_movie_update(bot, normalized_key, is_update=False)
             if msg:
-                await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": msg.id}})
+                await db.movie_updates.update_one({"_id": normalized_key}, {"$set": {"message_id": msg.id}})
             return
         
-        # ---------- New movie ----------
         movie_doc = {
-            "_id": base_name,
+            "_id": normalized_key,
+            "title": base_name,
             "files": [file_data],
             "poster_url": final_poster,
             "rating": rating_val,
             "year": year_val,
             "tag": media_info["tag"],
             "language": final_language,
+            "tags": media_info.get("tags", ""),
             "message_id": None,
             "is_posted": True,
             "first_posted_at": datetime.now()
@@ -675,41 +670,41 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name):
         
         try:
             await db.movie_updates.insert_one(movie_doc)
-            msg = await send_movie_update(bot, base_name, is_update=False)
+            msg = await send_movie_update(bot, normalized_key, is_update=False)
             if msg:
-                await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": msg.id}})
+                await db.movie_updates.update_one({"_id": normalized_key}, {"$set": {"message_id": msg.id}})
         except DuplicateKeyError:
             await db.movie_updates.update_one(
-                {"_id": base_name},
+                {"_id": normalized_key},
                 {"$push": {"files": file_data}, "$set": {"message_id": None, "first_posted_at": datetime.now()}}
             )
-            msg = await send_movie_update(bot, base_name, is_update=False)
+            msg = await send_movie_update(bot, normalized_key, is_update=False)
             if msg:
-                await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": msg.id}})
+                await db.movie_updates.update_one({"_id": normalized_key}, {"$set": {"message_id": msg.id}})
 
     except Exception as e:
         logger.error(f"Error in backend lock verification process: {e}")
 
 # ============================================================
-# 🟢 SEND MOVIE UPDATE – ORIGINAL POSTER (NO TEXT OVERLAY)
+# 🟢 SEND MOVIE UPDATE – CORRECT AUDIO LINE
 # ============================================================
-async def send_movie_update(bot, base_name, is_update=False):
+async def send_movie_update(bot, normalized_key, is_update=False):
     try:
-        movie_doc = await db.movie_updates.find_one({"_id": base_name})
+        movie_doc = await db.movie_updates.find_one({"_id": normalized_key})
         if not movie_doc:
             return None
 
-        text = generate_movie_message(movie_doc, base_name)
+        display_title = movie_doc.get("title", normalized_key)
+        text = generate_movie_message(movie_doc, display_title)
         buttons = InlineKeyboardMarkup([[InlineKeyboardButton(text='♻️ 𝐉𝐎𝐈𝐍 𝐑𝐄𝐐𝐔𝐄𝐒𝐓 𝐆𝐑𝐎𝐔𝐏 ♻️', url="https://t.me/+l-EIo3NnnJAxODE9")]])
         
         poster_url = movie_doc.get("poster_url")
         if not poster_url or not poster_url.startswith(('http://', 'https://')):
-            logger.info(f"⚠️ Invalid poster URL for '{base_name}'. Skipping post creation.")
+            logger.info(f"⚠️ Invalid poster URL for '{display_title}'. Skipping post creation.")
             return None
 
         sent_msg = None
 
-        # --- UPDATE CASE ---
         if is_update and movie_doc.get("message_id"):
             try:
                 sent_msg = await bot.edit_message_media(
@@ -722,9 +717,9 @@ async def send_movie_update(bot, base_name, is_update=False):
                 sent_msg = movie_doc
             except FloodWait as e:
                 await asyncio.sleep(e.value)
-                return await send_movie_update(bot, base_name, is_update)
+                return await send_movie_update(bot, normalized_key, is_update)
             except MessageIdInvalid:
-                logger.warning(f"Message ID invalid for {base_name}, will send new.")
+                logger.warning(f"Message ID invalid for {display_title}, will send new.")
                 is_update = False
             except Exception as e:
                 logger.error(f"Edit media error: {e}")
@@ -742,10 +737,9 @@ async def send_movie_update(bot, base_name, is_update=False):
             if sent_msg:
                 return sent_msg
             else:
-                logger.warning(f"Update failed for {base_name}, not creating duplicate.")
+                logger.warning(f"Update failed for {display_title}, not creating duplicate.")
                 return None
 
-        # --- NEW POST CASE ---
         try:
             sent_msg = await bot.send_photo(
                 chat_id=MOVIE_UPDATE_CHANNEL,
@@ -756,30 +750,122 @@ async def send_movie_update(bot, base_name, is_update=False):
             )
         except FloodWait as e:
             await asyncio.sleep(e.value)
-            return await send_movie_update(bot, base_name, is_update)
+            return await send_movie_update(bot, normalized_key, is_update)
         except Exception as e:
             logger.error(f"New send failed: {e}")
             return None
 
         if sent_msg and hasattr(sent_msg, 'id'):
-            await db.movie_updates.update_one({"_id": base_name}, {"$set": {"message_id": sent_msg.id}})
-            asyncio.create_task(verify_and_correct_post_with_ai(bot, sent_msg.id, base_name, buttons))
+            await db.movie_updates.update_one({"_id": normalized_key}, {"$set": {"message_id": sent_msg.id}})
+            asyncio.create_task(verify_and_correct_post_with_ai(bot, sent_msg.id, normalized_key, buttons))
             return sent_msg
 
     except Exception as e:
         logger.error(f"Failed to push update layout: {e}")
     return None
 
-# ============ AI DOUBLE CHECK & AUTO CORRECTION ============
+# ============================================================
+# 🟢 GENERATE MOVIE MESSAGE – NO DEFAULT HINDI
+# ============================================================
+def generate_movie_message(movie_doc, display_title) -> str:
+    all_languages = set()
+    for file in movie_doc["files"]:
+        if file.get("language") and file["language"] != "N/A":
+            all_languages.update(l.strip() for l in file["language"].split(",") if l.strip())
+    
+    if movie_doc.get("language") and movie_doc["language"] != "N/A":
+        all_languages.update(l.strip() for l in movie_doc["language"].split(",") if l.strip())
+    
+    # 🟢 ONLY extracted languages – NO DEFAULT
+    if all_languages:
+        language_str = " ".join(f"#{lang}" for lang in sorted(all_languages))
+    else:
+        language_str = ""  # Empty if no languages found
+    
+    # 🟢 Source tags from DB
+    tags = movie_doc.get("tags", "")
+    
+    # Combine language and tags
+    if language_str and tags:
+        audio_line = f"➥ Aᴜᴅɪᴏ Tʀᴀᴄᴋ:- 🔊 {language_str} {tags}"
+    elif language_str:
+        audio_line = f"➥ Aᴜᴅɪᴏ Tʀᴀᴄᴋ:- 🔊 {language_str}"
+    elif tags:
+        audio_line = f"➥ Aᴜᴅɪᴏ Tʀᴀᴄᴋ:- 🔊 {tags}"
+    else:
+        audio_line = "➥ Aᴜᴅɪᴏ Tʀᴀᴄᴋ:- 🔊 N/A"
+    
+    title = html.escape(display_title.upper())
+    title = re.sub(r'\b10BIT\b', '', title, flags=re.IGNORECASE)
+    title = re.sub(r'\s+', ' ', title).strip()
+    
+    year_val = str(movie_doc.get("year", "")).strip()
+    year_val = re.sub(r'[()\[\]]', '', year_val)
+    is_series = (movie_doc.get("tag") == "#SERIES")
+    year_str = "" if is_series else f" ({html.escape(year_val)})" if year_val and year_val != "None" and year_val not in title else ""
+    
+    rating_raw = movie_doc.get("rating", "N/A")
+    rating_str = rating_raw if rating_raw != "N/A" else "N/A"
+    
+    return (
+        f"🎬 <code>{title}{year_str}</code>\n"
+        f"<i>📌 (Touch to Copy)</i>\n\n"
+        f"⭐ IMDb: {rating_str}\n\n"
+        f"{audio_line}\n\n"
+        f"✅ Added"
+    )
 
-async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, buttons):
+# ============================================================
+# 🟢 EXTERNAL FUNCTION FOR /setposter COMMAND
+# ============================================================
+async def update_poster_and_channel(client, movie_name: str, new_poster_url: str) -> dict:
+    try:
+        normalized_key = re.sub(r'[^a-z0-9]', '', movie_name.lower())
+        
+        movie_doc = await db.movie_updates.find_one({"_id": normalized_key})
+        if not movie_doc:
+            return {"success": False, "message": f"❌ Movie '{movie_name}' not found in DB."}
+        
+        await db.movie_updates.update_one(
+            {"_id": normalized_key},
+            {"$set": {"poster_url": new_poster_url}}
+        )
+        
+        msg_id = movie_doc.get("message_id")
+        if msg_id:
+            try:
+                display_title = movie_doc.get("title", movie_name)
+                text = generate_movie_message(movie_doc, display_title)
+                buttons = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(text='♻️ 𝐉𝐎𝐈𝐍 𝐑𝐄𝐐𝐔𝐄𝐒𝐓 𝐆𝐑𝐎𝐔𝐏 ♻️', url="https://t.me/+l-EIo3NnnJAxODE9")
+                ]])
+                
+                await client.edit_message_media(
+                    chat_id=MOVIE_UPDATE_CHANNEL,
+                    message_id=msg_id,
+                    media=InputMediaPhoto(media=new_poster_url, caption=text, parse_mode=enums.ParseMode.HTML),
+                    reply_markup=buttons
+                )
+                return {"success": True, "message": f"✅ Poster updated for '{display_title}' in DB and Channel."}
+            except Exception as e:
+                logger.error(f"Failed to edit post for {movie_name}: {e}")
+                return {"success": True, "message": f"⚠️ DB updated, but channel post edit failed: {str(e)}"}
+        else:
+            return {"success": True, "message": f"✅ DB updated for '{movie_name}', but no channel post found (auto-deleted)."}
+            
+    except Exception as e:
+        logger.error(f"update_poster_and_channel error: {e}")
+        return {"success": False, "message": f"❌ Error: {str(e)}"}
+
+async def verify_and_correct_post_with_ai(bot, message_id: int, normalized_key: str, buttons):
     try:
         await asyncio.sleep(60)
-        movie_doc = await db.movie_updates.find_one({"_id": base_name})
+        movie_doc = await db.movie_updates.find_one({"_id": normalized_key})
         if not movie_doc or not movie_doc.get("poster_url"):
             return
 
-        correct_text = generate_movie_message(movie_doc, base_name)
+        display_title = movie_doc.get("title", normalized_key)
+        correct_text = generate_movie_message(movie_doc, display_title)
         
         try:
             live_msg = await bot.get_messages(chat_id=MOVIE_UPDATE_CHANNEL, message_ids=message_id)
@@ -804,50 +890,9 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, base_name: str, 
         except FloodWait as e:
             logger.warning(f"AI engine hit floodwait. Sleeping for {e.value} seconds.")
             await asyncio.sleep(e.value + 5)
-            await verify_and_correct_post_with_ai(bot, message_id, base_name, buttons)
+            await verify_and_correct_post_with_ai(bot, message_id, normalized_key, buttons)
         except Exception as msg_err:
             logger.error(f"Error while fetching or editing live message for AI verification: {msg_err}")
             
     except Exception as e:
         logger.error(f"Critical error in AI Double-Check Engine: {e}")
-
-# ==================================================
-# 🟢 GENERATE MOVIE MESSAGE – CORRECT RATING + AUDIO TRACK (NO SUBTITLES)
-# ==================================================
-
-def generate_movie_message(movie_doc, base_name) -> str:
-    all_languages = set()
-    for file in movie_doc["files"]:
-        if file.get("language") and file["language"] != "N/A":
-            all_languages.update(l.strip() for l in file["language"].split(",") if l.strip())
-    
-    if movie_doc.get("language") and movie_doc["language"] != "N/A":
-        all_languages.update(l.strip() for l in movie_doc["language"].split(",") if l.strip())
-    
-    language_str = " ".join(f"#{lang}" for lang in sorted(all_languages)) if all_languages else "#Hindi"
-    
-    title = html.escape(base_name.upper())
-    title = re.sub(r'\b10BIT\b', '', title, flags=re.IGNORECASE)
-    title = re.sub(r'\s+', ' ', title).strip()
-    
-    year_val = str(movie_doc.get("year", "")).strip()
-    year_val = re.sub(r'[()\[\]]', '', year_val)
-    
-    is_series = (movie_doc.get("tag") == "#SERIES")
-    
-    if is_series:
-        year_str = ""
-    else:
-        year_str = f" ({html.escape(year_val)})" if year_val and year_val != "None" and year_val not in title else ""
-    
-    # ✅ IMDb Rating – correctly formatted
-    rating_raw = movie_doc.get("rating", "N/A")
-    rating_str = rating_raw if rating_raw != "N/A" else "N/A"
-    
-    return (
-        f"🎬 <code>{title}{year_str}</code>\n"
-        f"<i>📌 (Touch to Copy)</i>\n\n"
-        f"⭐ IMDb: {rating_str}\n\n"
-        f"➡ Audio Track: 🔊 {language_str}\n\n"
-        f"✅ Added"
-)
