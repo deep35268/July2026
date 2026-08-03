@@ -47,9 +47,9 @@ SPIDY_API_URL = "https://poster-api.ispidy.com/v1/fetch"
 FANART_API_KEY = "cfa9dc054d221b8d107f8411cd20b13f"
 FANART_API_URL = "https://webservice.fanart.tv/v3/movies"
 
-# OMDb API
-OMDB_API_KEY = "5f7182e"
-OMDB_API_URL = "http://www.omdbapi.com/"
+# OMDb API - ⚠️ ਹੁਣ ਵਰਤੋਂ ਨਹੀਂ ਕੀਤੀ ਜਾ ਰਹੀ (ਖੜਾ ਪੋਸਟਰ ਬੰਦ ਕਰਨ ਲਈ)
+# OMDB_API_KEY = "5f7182e"
+# OMDB_API_URL = "http://www.omdbapi.com/"
 
 # OpenPosterDB API (optional – if hosted)
 OPENPOSTERDB_API_KEY = "t0-free-rpdb"
@@ -72,6 +72,7 @@ IGNORE_WORDS = {
     "primevideo", "hotstar", "zee5", "jio", "jiohotstar", "jhs", "aha", "hbo", "paramount", 
     "apple", "hoichoi", "sunnxt", "viki", "x264", "x265", "avc", "dd5", "dovi", "hdr",
     "10bit", "10-bit", "8bit", "8-bit",
+    # Subtitle related – IGNORED
     "subtitle", "subtitles", "srt", "subs"
 } | BAD_WORDS
 
@@ -129,9 +130,10 @@ EPISODE_CLEAN_PATTERN = re.compile(r'\b(S\d{1,2}|E\d{1,3}|Ep\d{1,3}|Episode\s*\d
 
 MEDIA_FILTER = filters.document | filters.video | filters.audio
 
-# ============ POSTER SOURCES ============
+# ============ POSTER SOURCES (ONLY LANDSCAPE) ============
 
 async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optional[str]:
+    """Fetch poster from Stremio Cinemeta (fallback)."""
     try:
         session = await get_session()
         m_type = "series" if is_series else "movie"
@@ -150,33 +152,10 @@ async def fetch_cinemeta_ai_poster(query: str, is_series: bool = False) -> Optio
         logger.error(f"Cinemeta AI Metadata Error: {e}")
     return None
 
-async def fetch_omdb_poster(query: str, year: Optional[str] = None) -> Optional[str]:
-    try:
-        session = await get_session()
-        params = {
-            "apikey": OMDB_API_KEY,
-            "t": query,
-            "type": "movie"
-        }
-        if year and year != "N/A":
-            params["y"] = year
-        async with session.get(OMDB_API_URL, params=params, timeout=10) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                if data.get("Response") == "True":
-                    poster = data.get("Poster")
-                    if poster and poster.startswith(('http://', 'https://')) and poster != "N/A":
-                        logger.info(f"✅ OMDb: Found poster for '{query}'")
-                        return poster
-                else:
-                    logger.info(f"❌ OMDb: No result for '{query}'")
-            else:
-                logger.warning(f"⚠️ OMDb: Status {resp.status} for '{query}'")
-    except Exception as e:
-        logger.error(f"❌ OMDb error for '{query}': {e}")
-    return None
+# ❌ OMDb fetch function (fetch_omdb_poster) ਨੂੰ ਪੂਰੀ ਤਰ੍ਹਾਂ ਹਟਾ ਦਿੱਤਾ ਗਿਆ — ਕਿਉਂਕਿ ਇਹ ਖੜਾ (portrait) ਪੋਸਟਰ ਦਿੰਦਾ ਹੈ।
 
 async def fetch_fanart_landscape_poster(tmdb_id: str) -> Optional[str]:
+    """Fetch landscape (moviebackground) from fanart.tv using TMDB ID."""
     if not tmdb_id:
         return None
     try:
@@ -203,6 +182,7 @@ async def fetch_fanart_landscape_poster(tmdb_id: str) -> Optional[str]:
     return None
 
 async def fetch_openposterdb_landscape(tmdb_id: str) -> Optional[str]:
+    """Fetch backdrop from OpenPosterDB using TMDB ID."""
     if not tmdb_id:
         return None
     try:
@@ -219,8 +199,14 @@ async def fetch_openposterdb_landscape(tmdb_id: str) -> Optional[str]:
     return None
 
 async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year: Optional[str] = None) -> Optional[str]:
+    """
+    Fetch landscape poster from Spidy Poster API.
+    Cleans query to remove episode/season info, then tries exact title match.
+    """
     try:
         session = await get_session()
+        
+        # Clean query: remove season/episode patterns
         clean_query = query
         clean_query = re.sub(r'\bS\d{1,2}E\d{1,2}\b', '', clean_query, flags=re.IGNORECASE)
         clean_query = re.sub(r'\bS\d{1,2}\b', '', clean_query, flags=re.IGNORECASE)
@@ -253,6 +239,7 @@ async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year
                     return None
                 
                 query_lower = clean_query.lower()
+                # Exact title match
                 for item in results:
                     item_title = item.get("title", "")
                     if item_title.lower() == query_lower:
@@ -261,6 +248,7 @@ async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year
                             logger.info(f"✅ Spidy API: Found exact title match '{item_title}' for '{clean_query}'")
                             return landscape
                 
+                # Fallback: any landscape
                 for item in results:
                     landscape = item.get("landscape")
                     if landscape and landscape.startswith(('http://', 'https://')):
@@ -280,57 +268,59 @@ async def fetch_spidy_landscape_poster(query: str, is_series: bool = False, year
         logger.error(f"❌ Spidy API error for '{query}': {e}")
     return None
 
+# ============================================================
+# 🟢 MODIFIED: ORCHESTRATOR – ONLY LANDSCAPE SOURCES (OMDb HATAYA)
+# ============================================================
 async def get_landscape_poster_only(movie_name: str, is_series: bool = False, year: Optional[str] = None, tmdb_id: Optional[str] = None) -> Optional[str]:
-    # 1️⃣ Spidy
+    """
+    Try sources in order: Spidy API → TMDB → Cinemeta → Fanart.tv → OpenPosterDB.
+    ⛔ OMDb ਨੂੰ ਪੂਰੀ ਤਰ੍ਹਾਂ ਹਟਾ ਦਿੱਤਾ ਗਿਆ ਤਾਂ ਜੋ ਖੜਾ (portrait) ਪੋਸਟਰ ਕਦੇ ਨਾ ਆਵੇ।
+    """
+    # 1️⃣ Spidy Poster API (with exact title priority)
     spidy_backdrop = await fetch_spidy_landscape_poster(movie_name, is_series, year)
     if spidy_backdrop:
         logger.info(f"✅ Spidy poster found for '{movie_name}'")
         return spidy_backdrop
 
-    # 2️⃣ Fanart.tv
+    # 2️⃣ TMDB (Backdrop – HD Landscape)
+    if LANDSCAPE_POSTER and TMDB_POSTER:
+        try:
+            details = await get_movie_detailsx(movie_name)
+            if details and details.get('backdrop_url'):
+                backdrop = details['backdrop_url']
+                # Original size ਲਈ URL ਨੂੰ ਠੀਕ ਕਰੋ
+                if "t/p/" in backdrop:
+                    backdrop = re.sub(r'/t/p/w\d+/', '/t/p/original/', backdrop)
+                    backdrop = re.sub(r'/t/p/w\d+x\d+/', '/t/p/original/', backdrop)
+                logger.info(f"✅ TMDB backdrop found for '{movie_name}'")
+                return backdrop
+        except Exception as e:
+            logger.error(f"TMDB backdrop error: {e}")
+
+    # 3️⃣ Stremio Cinemeta (AI Fallback – Landscape)
+    ai_backdrop = await fetch_cinemeta_ai_poster(movie_name, is_series)
+    if ai_backdrop:
+        logger.info(f"✅ Cinemeta poster found for '{movie_name}'")
+        return ai_backdrop
+
+    # 4️⃣ Fanart.tv (moviebackground – Landscape)
     if tmdb_id:
         fanart_backdrop = await fetch_fanart_landscape_poster(tmdb_id)
         if fanart_backdrop:
             logger.info(f"✅ Fanart.tv poster found for '{movie_name}'")
             return fanart_backdrop
 
-    # 3️⃣ OMDb
-    omdb_poster = await fetch_omdb_poster(movie_name, year)
-    if omdb_poster:
-        logger.info(f"✅ OMDb poster found for '{movie_name}'")
-        return omdb_poster
-
-    # 4️⃣ TMDB
-    if LANDSCAPE_POSTER:
-        try:
-            details = await get_movie_detailsx(movie_name)
-            if details and details.get('backdrop_url'):
-                backdrop = details['backdrop_url']
-                if "t/p/" in backdrop:
-                    backdrop = re.sub(r'/t/p/w\d+/', '/t/p/original/', backdrop)
-                    backdrop = re.sub(r'/t/p/w\d+x\d+/', '/t/p/original/', backdrop)
-                logger.info(f"✅ TMDB poster found for '{movie_name}'")
-                return backdrop
-        except Exception as e:
-            logger.error(f"TMDB backdrop error: {e}")
-
-    # 5️⃣ Cinemeta
-    ai_backdrop = await fetch_cinemeta_ai_poster(movie_name, is_series)
-    if ai_backdrop:
-        logger.info(f"✅ Cinemeta poster found for '{movie_name}'")
-        return ai_backdrop
-
-    # 6️⃣ OpenPosterDB
+    # 5️⃣ OpenPosterDB (backdrop-default – Landscape)
     if tmdb_id:
         openposter_backdrop = await fetch_openposterdb_landscape(tmdb_id)
         if openposter_backdrop:
             logger.info(f"✅ OpenPosterDB poster found for '{movie_name}'")
             return openposter_backdrop
 
-    logger.info(f"❌ No poster found for '{movie_name}' from any source")
+    logger.info(f"❌ No landscape poster found for '{movie_name}' from any source")
     return None
 
-# ============ CLEANING AND EXTRACTION ============
+# ============ CLEANING AND EXTRACTION FUNCTIONS ============
 
 def clean_mentions_links(text: str) -> str:
     return CLEAN_PATTERN.sub("", text or "").strip()
@@ -350,12 +340,15 @@ def remove_ignored_words(text: str) -> str:
     return " ".join(cleaned_words)
 
 def extract_languages_from_text(text: str) -> set:
+    """Extract languages from filename, ignoring subtitle-related tokens."""
     SUBTITLE_KEYWORDS = {"sub", "subtitle", "subtitles", "srt", "subs"}
+    
     found = set()
     text_lower = text.lower()
     for sep in ['.', '_', '-', '+', ' ', '(', ')', '[', ']', '{', '}', ';', ',']:
         text_lower = text_lower.replace(sep, ' ')
     tokens = text_lower.split()
+    
     for token in tokens:
         if token in SUBTITLE_KEYWORDS:
             continue
@@ -365,36 +358,18 @@ def extract_languages_from_text(text: str) -> set:
                 break
     return found
 
-# ============================================================
-# 🟢 MAIN FUNCTION – EXTRACTS LANGUAGES & SOURCE TAGS
-# ============================================================
 def extract_media_info(filename: str, caption: str):
+    """Extract base name, year, language, quality, and normalized key."""
     filename_cleaned = clean_mentions_links(filename)
     filename_normalized = normalize(filename_cleaned)
 
     tag = "#MOVIE"
     year = None
     
-    # 🟢 Extract source tags ONLY (WEBDL, BLURAY, PREDVD, ORG, etc.)
-    source_keywords = [
-        "WEBDL", "WEBRIP", "BLURAY", "BRRIP", "PREDVD", 
-        "DVDSCR", "DVDRIP", "HDTV", "HDCAM", "HDRIP", "ORG"
-    ]
-    source_tags = []
-    for part in re.split(r'[._\-+ ]', filename_normalized):
-        part_clean = part.upper()
-        if part_clean in source_keywords:
-            source_tags.append(f"#{part_clean}")
-    
-    tags_str = " ".join(source_tags[:2]) if source_tags else ""
-    
-    # Quality tags are EXCLUDED from display
     quality = QUALITY_PATTERN.findall(filename_normalized)
     quality_str = ", ".join(quality) if quality else "N/A"
-    
     ott_platform = extract_ott_platform(filename_normalized)
-    
-    # 🟢 Extract languages (NO DEFAULT HINDI)
+
     lang_set = set()
     lang_set.update(extract_languages_from_text(filename_normalized))
     language = ", ".join(sorted(lang_set)) if lang_set else "N/A"
@@ -421,6 +396,7 @@ def extract_media_info(filename: str, caption: str):
         base_name = re.sub(r'\bS\d{1,2}\b', '', base_name, flags=re.IGNORECASE).strip()
         base_name = normalize(base_name)
 
+    # 🟢 Generate normalized key for DB (remove everything except letters & digits)
     normalized_key = re.sub(r'[^a-z0-9]', '', base_name.lower())
 
     return {
@@ -430,9 +406,8 @@ def extract_media_info(filename: str, caption: str):
         "year": year,
         "quality": quality_str,
         "ott_platform": ott_platform,
-        "language": language,      # extracted languages only, no fallback
-        "normalized_key": normalized_key,
-        "tags": tags_str           # source tags only
+        "language": language,
+        "normalized_key": normalized_key   # for DB _id
     }
 
 def extract_ott_platform(text: str) -> str:
@@ -466,7 +441,7 @@ async def process_and_send_update(bot, filename, caption):
         media_info = extract_media_info(filename, caption)
         base_name = media_info["base_name"]
         normalized_key = media_info["normalized_key"]
-        movie_key = normalized_key
+        movie_key = normalized_key  # Use normalized key for caching
         
         if len(POSTED_MOVIES) > MAX_CACHE_SIZE:
             POSTED_MOVIES.clear()
@@ -496,7 +471,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, norm
     file_data = {
         "filename": filename,
         "quality": media_info["quality"],
-        "language": media_info["language"],  # extracted languages only
+        "language": media_info["language"],
         "timestamp": datetime.now()
     }
 
@@ -554,37 +529,35 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, norm
 
         year_val = year_val or None
         
-        # ============================================================
-        # 🟢 LANGUAGE LOGIC – NO DEFAULT HINDI
-        # ============================================================
+        # Language Logic – Subtitles Ignored
         lang_set = set()
         raw_lang = media_info["language"]
         if raw_lang != "N/A":
             lang_set.update(l.strip() for l in raw_lang.split(",") if l.strip())
         
-        # Add TMDB original language ONLY if we have one
         if tmdb_language_override and tmdb_language_override != "N/A":
             lang_set.add(tmdb_language_override)
         
-        # 🟢 NO DEFAULT FALLBACK – if no languages found, keep "N/A"
-        if lang_set:
-            final_language = ", ".join(sorted(lang_set))
-        else:
-            final_language = "N/A"
+        if not lang_set:
+            if tmdb_language_override and tmdb_language_override != "N/A":
+                lang_set.add(tmdb_language_override)
+            else:
+                lang_set.add("Hindi")
         
+        final_language = ", ".join(sorted(lang_set))
         file_data["language"] = final_language
         
-        # ============================================================
-        # GET POSTER
-        # ============================================================
+        # 🟢 Get Poster – Only Landscape Sources (OMDb EXCLUDED)
         final_poster = await get_landscape_poster_only(base_name, is_series, year_val, str(tmdb_id) if tmdb_id else None)
 
         if not final_poster:
             logger.info(f"❌ Poster NOT found for '{base_name}'. Skipping post creation.")
             return
 
+        # ---------- Check if movie exists in DB using normalized_key ----------
         existing_movie = await db.movie_updates.find_one({"_id": normalized_key})
         
+        # ---------- If exists, verify if post still exists in channel ----------
         post_exists = False
         if existing_movie and existing_movie.get("message_id"):
             try:
@@ -599,6 +572,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, norm
                 logger.error(f"Error checking post for '{base_name}': {e}")
                 post_exists = False
         
+        # ---------- If post exists, update it ----------
         if post_exists:
             file_exists = any(f.get("filename") == filename for f in existing_movie.get("files", []))
             
@@ -611,9 +585,6 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, norm
                 update_fields["poster_url"] = final_poster
             if existing_movie.get("language") != final_language and final_language != "N/A":
                 update_fields["language"] = final_language
-            # 🟢 Update tags if changed
-            if existing_movie.get("tags") != media_info.get("tags"):
-                update_fields["tags"] = media_info.get("tags", "")
 
             if not file_exists:
                 await db.movie_updates.update_one(
@@ -627,6 +598,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, norm
             await send_movie_update(bot, normalized_key, is_update=True)
             return
         
+        # ---------- Post doesn't exist OR movie not in DB: Create new post ----------
         if existing_movie:
             update_fields = {
                 "message_id": None,
@@ -640,8 +612,6 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, norm
                 update_fields["poster_url"] = final_poster
             if existing_movie.get("language") != final_language and final_language != "N/A":
                 update_fields["language"] = final_language
-            if existing_movie.get("tags") != media_info.get("tags"):
-                update_fields["tags"] = media_info.get("tags", "")
             
             await db.movie_updates.update_one(
                 {"_id": normalized_key},
@@ -653,6 +623,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, norm
                 await db.movie_updates.update_one({"_id": normalized_key}, {"$set": {"message_id": msg.id}})
             return
         
+        # ---------- New movie ----------
         movie_doc = {
             "_id": normalized_key,
             "title": base_name,
@@ -662,7 +633,6 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, norm
             "year": year_val,
             "tag": media_info["tag"],
             "language": final_language,
-            "tags": media_info.get("tags", ""),
             "message_id": None,
             "is_posted": True,
             "first_posted_at": datetime.now()
@@ -685,9 +655,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, norm
     except Exception as e:
         logger.error(f"Error in backend lock verification process: {e}")
 
-# ============================================================
-# 🟢 SEND MOVIE UPDATE – CORRECT AUDIO LINE
-# ============================================================
+# ============ SEND MOVIE UPDATE (NO RESIZE, ORIGINAL LANDSCAPE) ============
 async def send_movie_update(bot, normalized_key, is_update=False):
     try:
         movie_doc = await db.movie_updates.find_one({"_id": normalized_key})
@@ -705,6 +673,7 @@ async def send_movie_update(bot, normalized_key, is_update=False):
 
         sent_msg = None
 
+        # --- UPDATE CASE ---
         if is_update and movie_doc.get("message_id"):
             try:
                 sent_msg = await bot.edit_message_media(
@@ -740,10 +709,11 @@ async def send_movie_update(bot, normalized_key, is_update=False):
                 logger.warning(f"Update failed for {display_title}, not creating duplicate.")
                 return None
 
+        # --- NEW POST CASE (SENDING ORIGINAL LANDSCAPE URL DIRECTLY) ---
         try:
             sent_msg = await bot.send_photo(
                 chat_id=MOVIE_UPDATE_CHANNEL,
-                photo=poster_url,
+                photo=poster_url,  # 🟢 ਇਹ URL ਪਹਿਲਾਂ ਹੀ Landscape ਹੈ (OMDb ਹਟਾ ਦਿੱਤਾ)
                 caption=text,
                 reply_markup=buttons,
                 parse_mode=enums.ParseMode.HTML
@@ -764,99 +734,7 @@ async def send_movie_update(bot, normalized_key, is_update=False):
         logger.error(f"Failed to push update layout: {e}")
     return None
 
-# ============================================================
-# 🟢 GENERATE MOVIE MESSAGE – NO DEFAULT HINDI
-# ============================================================
-def generate_movie_message(movie_doc, display_title) -> str:
-    all_languages = set()
-    for file in movie_doc["files"]:
-        if file.get("language") and file["language"] != "N/A":
-            all_languages.update(l.strip() for l in file["language"].split(",") if l.strip())
-    
-    if movie_doc.get("language") and movie_doc["language"] != "N/A":
-        all_languages.update(l.strip() for l in movie_doc["language"].split(",") if l.strip())
-    
-    # 🟢 ONLY extracted languages – NO DEFAULT
-    if all_languages:
-        language_str = " ".join(f"#{lang}" for lang in sorted(all_languages))
-    else:
-        language_str = ""  # Empty if no languages found
-    
-    # 🟢 Source tags from DB
-    tags = movie_doc.get("tags", "")
-    
-    # Combine language and tags
-    if language_str and tags:
-        audio_line = f"➥ Aᴜᴅɪᴏ Tʀᴀᴄᴋ:- 🔊 {language_str} {tags}"
-    elif language_str:
-        audio_line = f"➥ Aᴜᴅɪᴏ Tʀᴀᴄᴋ:- 🔊 {language_str}"
-    elif tags:
-        audio_line = f"➥ Aᴜᴅɪᴏ Tʀᴀᴄᴋ:- 🔊 {tags}"
-    else:
-        audio_line = "➥ Aᴜᴅɪᴏ Tʀᴀᴄᴋ:- 🔊 N/A"
-    
-    title = html.escape(display_title.upper())
-    title = re.sub(r'\b10BIT\b', '', title, flags=re.IGNORECASE)
-    title = re.sub(r'\s+', ' ', title).strip()
-    
-    year_val = str(movie_doc.get("year", "")).strip()
-    year_val = re.sub(r'[()\[\]]', '', year_val)
-    is_series = (movie_doc.get("tag") == "#SERIES")
-    year_str = "" if is_series else f" ({html.escape(year_val)})" if year_val and year_val != "None" and year_val not in title else ""
-    
-    rating_raw = movie_doc.get("rating", "N/A")
-    rating_str = rating_raw if rating_raw != "N/A" else "N/A"
-    
-    return (
-        f"🎬 <code>{title}{year_str}</code>\n"
-        f"<i>📌 (Touch to Copy)</i>\n\n"
-        f"⭐ IMDb: {rating_str}\n\n"
-        f"{audio_line}\n\n"
-        f"✅ Added"
-    )
-
-# ============================================================
-# 🟢 EXTERNAL FUNCTION FOR /setposter COMMAND
-# ============================================================
-async def update_poster_and_channel(client, movie_name: str, new_poster_url: str) -> dict:
-    try:
-        normalized_key = re.sub(r'[^a-z0-9]', '', movie_name.lower())
-        
-        movie_doc = await db.movie_updates.find_one({"_id": normalized_key})
-        if not movie_doc:
-            return {"success": False, "message": f"❌ Movie '{movie_name}' not found in DB."}
-        
-        await db.movie_updates.update_one(
-            {"_id": normalized_key},
-            {"$set": {"poster_url": new_poster_url}}
-        )
-        
-        msg_id = movie_doc.get("message_id")
-        if msg_id:
-            try:
-                display_title = movie_doc.get("title", movie_name)
-                text = generate_movie_message(movie_doc, display_title)
-                buttons = InlineKeyboardMarkup([[
-                    InlineKeyboardButton(text='♻️ 𝐉𝐎𝐈𝐍 𝐑𝐄𝐐𝐔𝐄𝐒𝐓 𝐆𝐑𝐎𝐔𝐏 ♻️', url="https://t.me/+l-EIo3NnnJAxODE9")
-                ]])
-                
-                await client.edit_message_media(
-                    chat_id=MOVIE_UPDATE_CHANNEL,
-                    message_id=msg_id,
-                    media=InputMediaPhoto(media=new_poster_url, caption=text, parse_mode=enums.ParseMode.HTML),
-                    reply_markup=buttons
-                )
-                return {"success": True, "message": f"✅ Poster updated for '{display_title}' in DB and Channel."}
-            except Exception as e:
-                logger.error(f"Failed to edit post for {movie_name}: {e}")
-                return {"success": True, "message": f"⚠️ DB updated, but channel post edit failed: {str(e)}"}
-        else:
-            return {"success": True, "message": f"✅ DB updated for '{movie_name}', but no channel post found (auto-deleted)."}
-            
-    except Exception as e:
-        logger.error(f"update_poster_and_channel error: {e}")
-        return {"success": False, "message": f"❌ Error: {str(e)}"}
-
+# ============ AI DOUBLE CHECK & AUTO CORRECTION ============
 async def verify_and_correct_post_with_ai(bot, message_id: int, normalized_key: str, buttons):
     try:
         await asyncio.sleep(60)
@@ -896,3 +774,42 @@ async def verify_and_correct_post_with_ai(bot, message_id: int, normalized_key: 
             
     except Exception as e:
         logger.error(f"Critical error in AI Double-Check Engine: {e}")
+
+# ==================================================
+# 🟢 generate_movie_message
+# ==================================================
+def generate_movie_message(movie_doc, display_title) -> str:
+    all_languages = set()
+    for file in movie_doc["files"]:
+        if file.get("language") and file["language"] != "N/A":
+            all_languages.update(l.strip() for l in file["language"].split(",") if l.strip())
+    
+    if movie_doc.get("language") and movie_doc["language"] != "N/A":
+        all_languages.update(l.strip() for l in movie_doc["language"].split(",") if l.strip())
+    
+    language_str = " ".join(f"#{lang}" for lang in sorted(all_languages)) if all_languages else "#Hindi"
+    
+    title = html.escape(display_title.upper())
+    title = re.sub(r'\b10BIT\b', '', title, flags=re.IGNORECASE)
+    title = re.sub(r'\s+', ' ', title).strip()
+    
+    year_val = str(movie_doc.get("year", "")).strip()
+    year_val = re.sub(r'[()\[\]]', '', year_val)
+    
+    is_series = (movie_doc.get("tag") == "#SERIES")
+    
+    if is_series:
+        year_str = ""
+    else:
+        year_str = f" ({html.escape(year_val)})" if year_val and year_val != "None" and year_val not in title else ""
+    
+    rating_raw = movie_doc.get("rating", "N/A")
+    rating_str = rating_raw if rating_raw != "N/A" else "N/A"
+    
+    return (
+        f"🎬 <code>{title}{year_str}</code>\n"
+        f"<i>📌 (Touch to Copy)</i>\n\n"
+        f"⭐ IMDb: {rating_str}\n\n"
+        f"➡ Audio Track: 🔊 {language_str}\n\n"
+        f"✅ Added"
+    )
